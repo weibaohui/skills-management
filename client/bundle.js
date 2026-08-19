@@ -232,27 +232,8 @@ window.__ModuleLoader__.load({
             return `${(bytes / 1024 / 1024).toFixed(1)} MB`
           }
 
-          if (detail !== null) {
-            return React.createElement('div', { className: 'skm-detail' },
-              React.createElement('div', { className: 'skm-detailHeader' },
-                React.createElement('button', { type: 'button', className: 'skm-btn', onClick: () => { setDetail(null); setDetailFile(null) } }, '← ', t('back')),
-                React.createElement('h3', { className: 'skm-detailTitle' }, detail.name),
-              ),
-              React.createElement('div', { className: 'skm-fileList' },
-                detail.files.map((file) => React.createElement('div', {
-                  key: file.path,
-                  className: 'skm-fileRow',
-                  onClick: () => { void openFile(detail.name, file.path) },
-                },
-                  React.createElement('span', null, file.path),
-                  React.createElement('span', null, formatSize(file.size)),
-                )),
-              ),
-              detailFile !== null && React.createElement('div', { className: 'skm-md' }, detailFile.text),
-              React.createElement('div', { className: 'skm-md' }, detail.content),
-            )
-          }
-
+          // All hooks above this point, before the early return: the detail view
+          // renders with the same hook order as the list, or React #300 kills it.
           const lower = search.trim().toLowerCase()
           const match = (row) => lower === ''
             || row.name.toLowerCase().includes(lower)
@@ -279,6 +260,27 @@ window.__ModuleLoader__.load({
             observer.observe(sentinel)
             return () => { observer.disconnect() }
           }, [visibleCount, search, source])
+
+          if (detail !== null) {
+            return React.createElement('div', { className: 'skm-detail' },
+              React.createElement('div', { className: 'skm-detailHeader' },
+                React.createElement('button', { type: 'button', className: 'skm-btn', onClick: () => { setDetail(null); setDetailFile(null) } }, '← ', t('back')),
+                React.createElement('h3', { className: 'skm-detailTitle' }, detail.name),
+              ),
+              React.createElement('div', { className: 'skm-fileList' },
+                detail.files.map((file) => React.createElement('div', {
+                  key: file.path,
+                  className: 'skm-fileRow',
+                  onClick: () => { void openFile(detail.name, file.path) },
+                },
+                  React.createElement('span', null, file.path),
+                  React.createElement('span', null, formatSize(file.size)),
+                )),
+              ),
+              detailFile !== null && React.createElement('div', { className: 'skm-md' }, detailFile.text),
+              React.createElement('div', { className: 'skm-md' }, detail.content),
+            )
+          }
 
           return React.createElement('div', { className: 'skm-inner' },
             error !== null && React.createElement('div', { className: 'skm-err' }, error),
