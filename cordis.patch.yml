@@ -1,0 +1,12 @@
+# dsh-plugin-skills-management bundle patch: contributes the plugin row into the host
+# composition when this package is installed via `dsh plugin add`.
+#
+# The plugin is HOST-PLANE: it registers a skill provider on the host
+# `skills` registry and serves its HTTP API over a webServer route, and its
+# client half registers a full-page management surface plus a settings page.
+# It must therefore land in the host composition (this insert), never inside
+# an agent preset.
+
+- insert:
+    - id: skills-management
+      name: 'dsh-plugin-skills-management'

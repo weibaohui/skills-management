@@ -1,0 +1,45 @@
+{
+  "name": "dsh-plugin-skills-management",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness plugin: ntd skill marketplace — reads the ntd bundled skill collection, registers every skill on the dsh SkillRegistry (callable through the skill tool), and serves install/delete/detail APIs plus a management page (market browse + installed library).",
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "plugin",
+    "skills",
+    "marketplace",
+    "ntd"
+  ],
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./client/bundle.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "files": [
+    "src",
+    "client",
+    "cordis.patch.yml"
+  ],
+  "scripts": {
+    "check": "node --check src/index.js && node --check client/index.js",
+    "test": "node --test test/*.test.mjs",
+    "build:client": "node scripts/build-client.mjs"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "dependencies": {
+    "yaml": "^2.9.0"
+  }
+}
