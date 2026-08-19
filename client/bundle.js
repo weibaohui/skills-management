@@ -28,7 +28,7 @@ window.__ModuleLoader__.load({
     const LOCALE_NS = 'settings.skillsMarketplace'
 
     const LOCALE_DICT = {
-      'zh-CN': {
+      zh: {
         nav: '技能市场',
         title: '技能市场',
         close: '关闭',
@@ -48,7 +48,7 @@ window.__ModuleLoader__.load({
         confirmDelete: '确认删除该技能？',
         loadFailed: '加载失败',
       },
-      'en-US': {
+      en: {
         nav: 'Skill Market',
         title: 'Skill Market',
         close: 'Close',
