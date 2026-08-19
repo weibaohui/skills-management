@@ -273,6 +273,16 @@ function invocationPolicy(meta) {
   }
 }
 
+/** Cap for descriptions in list responses; the detail endpoint serves full text. */
+const DESCRIPTION_LIMIT = 140
+
+/** One-line clamp for a list-view description. */
+function truncateDescription(text) {
+  if (typeof text !== 'string') return ''
+  const single = text.split(/\r?\n/)[0]
+  return single.length > DESCRIPTION_LIMIT ? `${single.slice(0, DESCRIPTION_LIMIT)}…` : single
+}
+
 /** Directory name for an installed skill: the last path segment of its full name. */
 function installDirName(fullName) {
   return basename(fullName)
@@ -457,24 +467,23 @@ module.exports = {
               sources.set(source, aggregate)
             }
             const installedNames = new Set(installed.map((row) => row.name))
+            // The list view truncates descriptions (full text lives on the
+            // detail endpoint): with 6000+ skills the untruncated payload
+            // reached 3MB and half of it was description bytes.
             sendJson(res, 200, {
               sources: [...sources.values()],
-              market: await Promise.all(market.map(async (row) => ({
+              market: market.map((row) => ({
                 name: row.entry.relPath,
                 shortName: row.name,
                 source: row.entry.relPath.split('/')[0],
-                description: row.description,
-                version: typeof row.meta.version === 'string' ? row.meta.version : undefined,
-                author: typeof row.meta.author === 'string' ? row.meta.author : undefined,
-                license: typeof row.meta.license === 'string' ? row.meta.license : undefined,
-                modifiedAt: row.modifiedAt,
+                description: truncateDescription(row.description),
                 installed: installedNames.has(row.name),
-              }))),
+              })),
               installed: await Promise.all(installed.map(async (row) => {
                 const { fileCount, totalSize } = await countFilesAndSize(row.entry.dir)
                 return {
                   name: row.name,
-                  description: row.description,
+                  description: truncateDescription(row.description),
                   path: row.entry.dir,
                   fileCount,
                   totalSize,

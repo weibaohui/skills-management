@@ -25,6 +25,9 @@ window.__ModuleLoader__.load({
 
     const API = '/skills-management/api'
 
+    /** Market cards rendered per increment; scrolling the sentinel loads more. */
+    const PAGE_SIZE = 60
+
     const LOCALE_NS = 'settings.skillsMarketplace'
 
     const LOCALE_DICT = {
@@ -107,6 +110,7 @@ window.__ModuleLoader__.load({
     .skm-rowMeta{font-size:11px;color:var(--dsw-alias-label-secondary)}
     .skm-rowActions{margin-left:auto;display:flex;gap:8px}
     .skm-empty{padding:40px 0;text-align:center;color:var(--dsw-alias-label-secondary);font-size:13px}
+    .skm-more{padding:16px 0;text-align:center;color:var(--dsw-alias-label-secondary);font-size:12px}
     .skm-detail{max-width:860px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
     .skm-detailHeader{display:flex;align-items:center;gap:10px}
     .skm-detailTitle{font-size:16px;font-weight:600;color:var(--dsw-alias-label-primary);word-break:break-all}
@@ -155,6 +159,7 @@ window.__ModuleLoader__.load({
           const [detail, setDetail] = React.useState(null)
           const [busy, setBusy] = React.useState(null)
           const [detailFile, setDetailFile] = React.useState(null)
+          const [visibleCount, setVisibleCount] = React.useState(PAGE_SIZE)
 
           const load = React.useCallback(async () => {
             setLoading(true)
@@ -256,6 +261,24 @@ window.__ModuleLoader__.load({
 
           const marketRows = data.market.filter((row) => (source === 'all' || row.source === source) && match(row))
           const installedNames = new Set(data.installed.map((row) => row.name))
+          // Render incrementally: with 6000+ market rows one full render blocked
+          // the main thread for seconds and made detail clicks feel dead.
+          const visibleRows = marketRows.slice(0, visibleCount)
+          const sentinelRef = React.useRef(null)
+          React.useEffect(() => {
+            setVisibleCount(PAGE_SIZE)
+          }, [search, source])
+          React.useEffect(() => {
+            const sentinel = sentinelRef.current
+            if (sentinel === null) return
+            const observer = new IntersectionObserver((entries) => {
+              if (entries.some((entry) => entry.isIntersecting)) {
+                setVisibleCount((count) => count + PAGE_SIZE)
+              }
+            }, { rootMargin: '600px' })
+            observer.observe(sentinel)
+            return () => { observer.disconnect() }
+          }, [visibleCount, search, source])
 
           return React.createElement('div', { className: 'skm-inner' },
             error !== null && React.createElement('div', { className: 'skm-err' }, error),
@@ -274,28 +297,34 @@ window.__ModuleLoader__.load({
                 ),
                 marketRows.length === 0
                   ? React.createElement('div', { className: 'skm-empty' }, t('emptyMarket'))
-                  : React.createElement('div', { className: 'skm-grid' },
-                    marketRows.map((row) => React.createElement('div', {
-                      key: row.name,
-                      className: 'skm-card',
-                      onClick: () => { void openDetail(row.name) },
-                    },
-                      React.createElement('div', { className: 'skm-cardName' }, row.shortName || row.name),
-                      React.createElement('div', { className: 'skm-cardSource' }, row.source),
-                      React.createElement('div', { className: 'skm-cardDesc' }, row.description || ''),
-                      React.createElement('div', { className: 'skm-cardActions' },
-                        row.installed && React.createElement('span', { className: 'skm-badge' }, t('installed')),
-                        React.createElement('button', {
-                          type: 'button',
-                          className: 'skm-btn skm-btnPrimary',
-                          disabled: busy === row.name,
-                          onClick: (event) => {
-                            event.stopPropagation()
-                            void install(row.name, row.installed === true)
-                          },
-                        }, busy === row.name ? '…' : row.installed ? t('reinstall') : t('install')),
-                      ),
-                    )),
+                  : React.createElement(React.Fragment, null,
+                    React.createElement('div', { className: 'skm-grid' },
+                      visibleRows.map((row) => React.createElement('div', {
+                        key: row.name,
+                        className: 'skm-card',
+                        onClick: () => { void openDetail(row.name) },
+                      },
+                        React.createElement('div', { className: 'skm-cardName' }, row.shortName || row.name),
+                        React.createElement('div', { className: 'skm-cardSource' }, row.source),
+                        React.createElement('div', { className: 'skm-cardDesc' }, row.description || ''),
+                        React.createElement('div', { className: 'skm-cardActions' },
+                          row.installed && React.createElement('span', { className: 'skm-badge' }, t('installed')),
+                          React.createElement('button', {
+                            type: 'button',
+                            className: 'skm-btn skm-btnPrimary',
+                            disabled: busy === row.name,
+                            onClick: (event) => {
+                              event.stopPropagation()
+                              void install(row.name, row.installed === true)
+                            },
+                          }, busy === row.name ? '…' : row.installed ? t('reinstall') : t('install')),
+                        ),
+                      )),
+                    ),
+                    visibleRows.length < marketRows.length && React.createElement('div', {
+                      ref: sentinelRef,
+                      className: 'skm-more',
+                    }, `${visibleRows.length} / ${marketRows.length}`),
                   ),
               )
               : React.createElement(React.Fragment, null,
