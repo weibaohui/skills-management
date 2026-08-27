@@ -9,852 +9,803 @@ window.__ModuleLoader__.load({
     Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" })
     var React = require("react")
     /**
-     * dsh-plugin-skills-management - Browser half (NTD-style)
+     * dsh-plugin-skills-management - Browser half.
      *
-     * Tabs: Executors (every on-machine agent skills dir, ntd source table),
-     * Market (ntd bundled collections), Sources (market repo grouping) and
-     * Installed (the dsh user library). Detail drawer and actions are scoped by
-     * executor: `Install` copies into the dsh library so the skill tool can call
-     * it, `Delete` removes from the owning source unless it is read-only.
+     * One React app for every surface (sidebar overlay + settings section).
+     * All interactive controls are host primitives (@deepseek-ai/dsh-client-ui-
+     * primitives); all colors come from the ui-theme `--dsw-*` token layers so
+     * light/dark follows the shell; all copy comes from the locale registry
+     * (`zh`/`en`) so switches render live. No hardcoded colors, no ad-hoc copy.
      */
+
+    // React is a loader platform module. Under plain Node (contract tests) a
+    // minimal createElement/hook shim keeps the source loadable for assertions.
+    let React = null
+    try { React = require('react') } catch {}
+    if (!React || typeof React.createElement !== 'function') {
+      React = {
+        createElement(type, props, ...kids) {
+          return { type, props: props || {}, kids: kids.flat(9).filter(k => k !== null && k !== undefined && k !== false && k !== true && typeof k !== 'string' || true) }
+        },
+        useState(init) { const v = [typeof init === 'function' ? init() : init]; return [v[0], x => { v[0] = typeof x === 'function' ? x(v[0]) : x }] },
+        useEffect() {}, useMemo(fn) { return fn() }, useRef(v = null) { return { current: v } },
+      }
+    }
+    const { createElement: h, useState, useEffect, useMemo, useRef } = React
+
+    // Platform module — always present in the loader's seeded require table.
+    // Under plain Node (tests) it is absent; a tagged-element shim keeps the
+    // tree structurally testable while every real surface ships primitives.
+    let P = null
+    try { P = require('@deepseek-ai/dsh-client-ui-primitives') } catch {}
+
+    const prim = (name) => P && P[name]
+      ? P[name]
+      : function Shim(props) {
+          const { children, text, ...rest } = props
+          const tag = props.href ? 'a' : ['item', 'entry'].includes(props.__kind) ? 'div' : 'button'
+          const el = document.createElement(tag === 'function' || typeof props.as === 'string' ? props.as : tag)
+          return h(tag, { ...rest, 'data-p-shim': name }, children)
+        }
+
+    // ── Locale ───────────────────────────────────────────────────────────────
+
+    const NS = 'skillsManagement'
+
+    const ZH = {
+      title: '技能市场',
+      close: '关闭',
+      tabExecutors: '执行器',
+      tabMarket: '市场',
+      tabSources: '来源',
+      tabInstalled: '已安装',
+      cardsHint: '选择一个执行器浏览它的技能，或一次查看全部',
+      browseAll: '浏览全部技能',
+      refresh: '刷新',
+      backCards: '← 执行器卡片',
+      backExecutors: '← 执行器',
+      backAll: '← 全部技能',
+      searchAll: '搜索全部技能…',
+      filterWithin: '在 {label} 内筛选…',
+      pickSource: '全部执行器',
+      loadingCatalogs: '正在加载全部执行器目录…',
+      scanning: '正在扫描 {label}…',
+      skillsSuffix: '个技能',
+      noExecutors: '本机未发现任何执行器目录',
+      dirMissingTitle: '{label}：目录不存在',
+      dirMissingHint: '预期位置 {dir}',
+      notFoundGroup: '本机不存在的来源（{n}）',
+      dirNotPresent: '目录不存在',
+      emptySearch: '没有匹配的技能',
+      emptySkillsIn: '{label} 中还没有技能',
+      installedTag: '已装',
+      readOnlyTag: '只读',
+      toDsh: '装入 DSH',
+      deleteBtn: '删除',
+      detail: '详情',
+      filesCount: '{n} 个文件',
+      totalSize: '共 {size}',
+      copy: '复制内容',
+      copied: '已复制到剪贴板',
+      installFrom: '从 {label} 安装',
+      installConfirm: '把 “{name}” 从 {label} 复制到 DSH 技能库？\n复制后即可通过 DSH 的 skill 工具调用。',
+      installFromMarket: '从市场安装 {name}？',
+      deleteConfirm: '确认从 {where} 删除 “{name}” ？',
+      whereDsh: 'DSH 技能库',
+      operationFailed: '操作失败',
+      preview: '文件预览',
+      content: '内容',
+      activeInDsh: '已在 DSH 生效',
+      pathLabel: '路径',
+      meTag: '本机',
+    }
+
+    const EN = {
+      title: 'Skills Market',
+      close: 'Close',
+      tabExecutors: 'Executors',
+      tabMarket: 'Market',
+      tabSources: 'Sources',
+      tabInstalled: 'Installed',
+      cardsHint: 'Pick an executor to browse its skills, or view everything at once',
+      browseAll: 'Browse all skills',
+      refresh: 'Refresh',
+      backCards: '← Executor cards',
+      backExecutors: '← Executors',
+      backAll: '← All skills',
+      searchAll: 'Search all skills…',
+      filterWithin: 'Filter within {label}…',
+      pickSource: 'All Executors',
+      loadingCatalogs: 'Loading all executor catalogs…',
+      scanning: 'Scanning {label}…',
+      skillsSuffix: 'skills',
+      noExecutors: 'No executor directories found on this machine',
+      dirMissingTitle: '{label}: directory not found',
+      dirMissingHint: 'Expected skills at {dir}',
+      notFoundGroup: 'Not found on this machine ({n})',
+      dirNotPresent: 'directory not present',
+      emptySearch: 'No matching skills',
+      emptySkillsIn: 'No skills in {label}',
+      installedTag: 'Installed',
+      readOnlyTag: 'read-only',
+      toDsh: 'To DSH',
+      deleteBtn: 'Delete',
+      detail: 'Detail',
+      filesCount: '{n} files',
+      totalSize: '{size}',
+      copy: 'Copy content',
+      copied: 'Copied to clipboard',
+      installFrom: 'Install from {label}',
+      installConfirm: 'Copy "{name}" from {label} into the DSH skills library? It becomes callable through the DSH skill tool.',
+      installFromMarket: 'Install {name} from market?',
+      deleteConfirm: 'Delete "{name}" from {where}?',
+      whereDsh: 'the DSH library',
+      operationFailed: 'Operation failed',
+      preview: 'File preview',
+      content: 'Content',
+      activeInDsh: 'active in DSH',
+      pathLabel: 'Path',
+      meTag: 'me',
+    }
+
+    // ── Pure helpers ────────────────────────────────────────────────────────
 
     const API = '/skills-management/api'
 
     function formatSize(bytes) {
       if (!Number.isFinite(bytes) || bytes < 0) return '-'
-      if (bytes < 1024) return bytes + " B"
-      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB"
-      return (bytes / (1024 * 1024)).toFixed(1) + " MB"
+      if (bytes < 1024) return bytes + ' B'
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+      return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
     }
 
-    function formatTime(isoString) {
-      if (!isoString) return "-"
+    function formatTime(iso) {
+      if (!iso) return '-'
       try {
-        const date = new Date(isoString)
-        const now = new Date()
-        const diff = now.getTime() - date.getTime()
-        const days = Math.floor(diff / (1000 * 60 * 60 * 24))
-        if (days > 30) return date.toLocaleDateString('zh-CN', {year:'numeric',month:'short',day:'numeric'})
-        if (days > 0) return days + "d ago"
-        const hours = Math.floor(diff / (1000 * 60 * 60))
-        if (hours > 0) return hours + "h ago"
-        const minutes = Math.floor(diff / (1000 * 60))
-        if (minutes > 0) return minutes + "m ago"
-        return "just now"
-      } catch { return "-" }
+        const days = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000)
+        if (days > 30) return new Date(iso).toLocaleDateString()
+        if (days > 0) return days + 'd'
+        const hours = Math.floor((Date.now() - new Date(iso).getTime()) / 3600000)
+        if (hours > 0) return hours + 'h'
+        const minutes = Math.floor((Date.now() - new Date(iso).getTime()) / 60000)
+        if (minutes > 0) return minutes + 'm'
+        return 'now'
+      } catch { return '-' }
     }
 
-    function generateGradient(name) {
+    function gradient(name) {
       let hash = 0
       for (let i = 0; i < name.length; i++) hash = ((hash << 5) - hash + name.charCodeAt(i)) | 0
       const h1 = Math.abs(hash) % 360
-      const h2 = (h1 + 40) % 360
-      return 'linear-gradient(135deg, hsl(' + h1 + ', 70%, 60%), hsl(' + h2 + ', 60%, 50%))'
+      return `linear-gradient(135deg, hsl(${h1},55%,55%), hsl(${(h1 + 40) % 360},45%,45%))`
     }
 
-    function getFileColor(filename) {
-      const ext = (filename.split('.').pop() || '').toLowerCase()
-      const m = {md:'#0891b2',ts:'#3178c6',js:'#f7df1e',json:'#f59e0b',yaml:'#e11d48',css:'#06b6d4',html:'#ea580c'}
-      return m[ext] || "#94a3b8"
+    const shortName = (name) => name.includes('/') ? name.split('/').slice(1).join('/') : name
+
+    /** Shared predicate for skill filtering (name / description / keywords). */
+    function matchSkill(s, lower) {
+      return (s.name || '').toLowerCase().includes(lower) ||
+        (s.description || '').toLowerCase().includes(lower) ||
+        (s.keywords || []).some(k => String(k).toLowerCase().includes(lower))
     }
 
-    function splitSkillName(name) {
-      if (!name.includes('/')) return {category:null, shortName:name}
-      const p = name.split('/')
-      return {category:p[0], shortName:p.slice(1).join('/')}
-    }
-
-    function escapeHtml(text) {
-      return String(text).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
-    }
-
-    function renderMarkdown(text) {
-      if (!text) return ""
-      text = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-      let h = text
-        .replace(/^### (.+)$/gm, '<h3>$1</h3>')
-        .replace(/^## (.+)$/gm, '<h2>$1</h2>')
-        .replace(/^# (.+)$/gm, '<h1>$1</h1>')
-        .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-        .replace(/\*(.+?)\*/g, "<em>$1</em>")
-        .replace(/```([\s\S]*?)```/g, "<pre><code>$1</code></pre>")
-        .replace(/`(.+?)`/g, "<code>$1</code>")
-        .replace(/^- (.+)$/gm, "<li>$1</li>")
-        .replace(/^\d+\. (.+)$/gm, "<li>$1</li>")
-      h = h.replace(/(<li>.*?<\/li>)/gs, "<ul>$1</ul>")
-      h = h.replace(/\n\n/g, "</p><p>")
-      h = "<p>" + h + "</p>"
-      h = h.replace(/<p><(h[123]|ul|pre)/g, "<$1")
-      h = h.replace(/<(h[123]|\/ul|pre)><\/p>/g, "<$1>")
-      h = h.replace(/<p><\/p>/g, "")
-      return h
-    }
+    // ── Token-based stylesheet (light/dark adaptive by construction) ────────
 
     const STYLE = `<style>
-    .skills-page{position:fixed;inset:0;z-index:1000;display:flex;flex-direction:column;background:#f5f5f5;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
-    .skills-header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 20px;border-bottom:1px solid #e5e5e5;background:#fff}
-    .skills-title{font-size:18px;font-weight:600;margin:0;color:#1a1a1a}
-    .skills-close{width:44px;height:44px;display:flex;align-items:center;justify-content:center;border:none;border-radius:8px;background:transparent;cursor:pointer;font-size:20px;color:#666}
-    .skills-body{flex:1;overflow:auto;padding:20px}
-    .skills-inner{max-width:1100px;margin:0 auto;display:flex;flex-direction:column;gap:16px}
-    .skills-tabs{display:flex;gap:4px;border-bottom:1px solid #e5e5e5;flex-wrap:wrap}
-    .skills-tab{min-height:44px;padding:10px 18px;border:none;background:transparent;color:#666;font-size:14px;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;font-weight:500}
-    .skills-tab:hover{color:#1a1a1a}
-    .skills-tab.active{color:#1890ff;border-bottom-color:#1890ff;font-weight:600}
-    .skills-toolbar{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
-    /* explicit colors: the host app is dark-themed and its global rules would
-       otherwise paint our white-surface controls light-on-light (invisible) */
-    .skills-search,.skills-select,.skills-btn{color:#1a1a1a}
-    .skills-search::placeholder{color:#9aa0a6}
-    .skills-select option{color:#1a1a1a;background:#fff}
-    .skills-search{flex:1;min-width:240px;min-height:44px;padding:8px 14px;border-radius:8px;border:1px solid #e5e5e5;background:#fff;font-size:14px;outline:none}
-    .skills-select{min-height:44px;padding:8px 12px;border-radius:8px;border:1px solid #e5e5e5;background:#fff;font-size:14px;max-width:260px}
-    .skills-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}
-    .skills-card{display:flex;flex-direction:column;padding:18px;border-radius:14px;border:1px solid #e5e5e5;background:#fff;cursor:pointer;transition:all .2s}
-    .skills-card:hover{border-color:#1890ff;transform:translateY(-3px);box-shadow:0 6px 16px rgba(0,0,0,0.1)}
-    .skills-card-avatar{width:48px;height:48px;border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:700;color:#fff;margin-bottom:14px}
-    .skills-card-title{font-size:15px;font-weight:600;color:#1a1a1a;margin-bottom:6px;word-break:break-all}
-    .skills-card-desc{font-size:13px;color:#666;line-height:1.5;flex:1;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
-    .skills-card-footer{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:auto;padding-top:14px;border-top:1px solid #e5e5e5}
-    .skills-card-tags{display:flex;gap:6px;flex-wrap:wrap}
-    .skills-tag{font-size:11px;padding:3px 10px;border-radius:8px;background:#f0f0f0;color:#666}
-    .skills-tag.version{background:rgba(8,145,178,0.12);color:#0891b2}
-    .skills-tag.readonly{background:rgba(229,72,77,0.12);color:#e5484d}
-    .skills-tag.ok{background:rgba(37,164,87,0.12);color:#25a457}
-    .skills-empty{padding:60px 20px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:12px;border:1px dashed #e5e5e5;border-radius:14px}
-    .skills-empty-title{font-size:16px;font-weight:600;color:#1a1a1a}
-    .skills-empty-hint{font-size:13px;color:#666}
-    .skills-btn{min-height:36px;padding:6px 14px;border-radius:8px;border:1px solid #e5e5e5;background:#fff;color:#1a1a1a;font-size:13px;cursor:pointer;font-weight:500}
-    .skills-btn:hover{border-color:#1890ff}
-    .skills-btn.primary{border-color:#1890ff;background:#1890ff;color:#fff}
-    .skills-btn.danger:hover{border-color:#e5484d;color:#e5484d}
-    .skills-source-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}
-    .skills-source-card{padding:20px;border-radius:14px;border:1px solid #e5e5e5;background:#fff;cursor:pointer;transition:all .2s}
-    .skills-source-card:hover{border-color:#1890ff;transform:translateY(-3px)}
-    .skills-source-card.missing{opacity:.55}
-    .skills-source-name{font-size:14px;font-weight:600;color:#1a1a1a;margin-bottom:8px;display:flex;align-items:center;gap:8px}
-    .skills-source-count{font-size:32px;font-weight:700;color:#1890ff}
-    .skills-source-count.none{color:#c0c0c0}
-    .skills-source-label{font-size:12px;color:#666}
-    .skills-source-dir{font-size:11px;color:#999;margin-top:6px;word-break:break-all}
-    .skills-drawer{position:fixed;top:0;right:0;bottom:0;width:720px;max-width:100vw;background:#f5f5f5;box-shadow:-4px 0 24px rgba(0,0,0,0.12);z-index:1001;display:flex;flex-direction:column;transform:translateX(100%);transition:transform .25s}
-    .skills-drawer.open{transform:translateX(0)}
-    .skills-drawer-header{display:flex;align-items:center;gap:12px;padding:14px 16px;border-bottom:1px solid #e5e5e5;background:#fff}
-    .skills-drawer-title{font-size:16px;font-weight:600;color:#1a1a1a;flex:1;word-break:break-all}
-    .skills-drawer-body{flex:1;overflow:auto;padding:20px}
-    .skills-drawer-close{width:40px;height:40px;display:flex;align-items:center;justify-content:center;border:none;border-radius:8px;background:transparent;cursor:pointer;font-size:18px;color:#666}
-    .skills-file-browser{display:flex;gap:16px;min-height:320px;margin-top:16px}
-    .skills-file-list{flex:0 0 220px;border:1px solid #e5e5e5;border-radius:10px;overflow:auto;background:#fff;max-height:480px}
-    .skills-file-item{display:flex;align-items:center;gap:8px;padding:8px 12px;cursor:pointer;font-size:13px;color:#1a1a1a}
-    .skills-file-item:hover{background:rgba(0,0,0,0.04)}
-    .skills-file-item.selected{background:rgba(24,144,255,0.1);color:#1890ff}
-    .skills-file-preview{flex:1;border:1px solid #e5e5e5;border-radius:10px;overflow:hidden;background:#fff;max-height:480px;overflow-y:auto}
-    .skills-file-content{padding:16px;font-size:13px;line-height:1.7;white-space:pre-wrap;color:#1a1a1a}
-    .skills-md-content h1{font-size:18px;font-weight:600;margin:0 0 14px;padding-bottom:8px;border-bottom:1px solid #e5e5e5}
-    .skills-md-content h2{font-size:15px;font-weight:600;margin:18px 0 10px}
-    .skills-md-content p{margin:0 0 10px}
-    .skills-md-content code{background:#f0f0f0;padding:2px 6px;border-radius:4px}
-    .skills-md-content pre{background:#f0f0f0;padding:12px;border-radius:8px;overflow-x:auto}
-    .skills-loading{padding:60px 20px;text-align:center}
-    .skills-spinner{width:36px;height:36px;border:3px solid #e5e5e5;border-top-color:#1890ff;border-radius:50%;animation:skspin .7s linear infinite;margin:0 auto 12px}
+    .sk-page{position:relative;display:flex;flex-direction:column;gap:14px;color:var(--dsw-alias-label-primary);font-family:var(--dsw-font-family);font-size:var(--dsw-font-sm-14,14px)}
+    .sk-overlay{position:fixed;inset:0;z-index:1000;background:var(--dsw-alias-bg-base);overflow:auto;padding:18px 22px}
+    .sk-tabs{display:flex;gap:6px;border-bottom:1px solid var(--dsw-alias-border-l2);padding-bottom:10px}
+    .sk-toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+    .spacer{flex:1}
+    .sk-hint{color:var(--dsw-alias-label-secondary)}
+    .sk-dir{color:var(--dsw-alias-label-tertiary);font-size:var(--dsw-font-xs-13,12px)}
+    .sk-tag{display:inline-flex;align-items:center;padding:2px 9px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);font-size:11.5px}
+    .sk-tag.accent{color:var(--dsw-alias-state-business-primary);border-color:var(--dsw-alias-state-business-primary)}
+    .sk-tag.danger{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary)}
+    .sk-tag.ok{color:var(--dsw-alias-state-success-primary);border-color:var(--dsw-alias-state-success-primary)}
+    .sk-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+    .sk-src{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px}
+    .sk-card{display:flex;flex-direction:column;gap:10px;padding:16px;border-radius:12px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);cursor:pointer;text-align:left}
+    .sk-card:hover{border-color:var(--dsw-alias-border-l3);background:var(--dsw-alias-interactive-bg-hover)}
+    .sk-card.missing{opacity:.5;cursor:default}
+    .sk-avatar{width:42px;height:42px;border-radius:11px;display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--dsw-alias-label-primary-inverted,#fff);font-size:17px;flex:none}
+    .sk-title{font-weight:600;word-break:break-all}
+    .sk-desc{color:var(--dsw-alias-label-secondary);font-size:13px;line-height:1.5;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+    .sk-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:auto;padding-top:10px;border-top:1px solid var(--dsw-alias-border-l1)}
+    .sk-chips{display:flex;gap:6px;flex-wrap:wrap}
+    .sk-rowbtns{display:flex;gap:6px}
+    .sk-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+    .sk-count{font-size:26px;font-weight:700;color:var(--dsw-alias-brand-primary,var(--dsw-alias-state-business-primary))}
+    .sk-count.none{color:var(--dsw-alias-label-dimmed,var(--dsw-alias-label-tertiary))}
+    .sk-empty{border:1px dashed var(--dsw-alias-border-l2);border-radius:12px;padding:44px 20px;text-align:center;color:var(--dsw-alias-label-secondary)}
+    .sk-loading{padding:48px;text-align:center;color:var(--dsw-alias-label-secondary)}
+    .sk-spin{width:30px;height:30px;margin:0 auto 10px;border-radius:50%;border:3px solid var(--dsw-alias-border-l2);border-top-color:var(--dsw-alias-brand-primary,var(--dsw-alias-state-business-primary));animation:skspin .7s linear infinite}
     @keyframes skspin{to{transform:rotate(360deg)}}
-    .skills-list{display:flex;flex-direction:column;gap:8px}
-    .skills-list-item{display:flex;align-items:center;gap:12px;padding:14px 16px;border-radius:10px;border:1px solid #e5e5e5;background:#fff}
-    .skills-list-name{font-size:14px;font-weight:600;color:#1a1a1a;flex:1}
-    .skills-list-meta{font-size:12px;color:#666}
-    /* pointer-events guards: the closed backdrop must never block page clicks */
-    .skills-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:999;opacity:0;transition:opacity .2s;pointer-events:none}
-    .skills-backdrop.visible{opacity:1;pointer-events:auto}
-    .skills-backdrop.visible{opacity:1}
-    .skills-alert{padding:12px 16px;border-radius:10px;background:rgba(24,144,255,0.08);border:1px solid rgba(24,144,255,0.15);font-size:14px;margin-bottom:16px}
-    .skills-meta-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px}
-    .skills-meta-item{padding:12px 14px;background:#fff;border-radius:10px;border:1px solid #e5e5e5}
-    .skills-meta-label{font-size:11px;color:#666;margin-bottom:3px}
-    .skills-meta-value{font-size:13px;font-weight:500;color:#1a1a1a;word-break:break-all}
-    .skills-actions-bar{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center}
-    .skills-section-title{font-size:14px;font-weight:600;color:#1a1a1a;margin:16px 0 10px}
+    .sk-list{display:flex;flex-direction:column;gap:8px}
+    .sk-list .sk-card{flex-direction:row;align-items:center;padding:12px 14px}
+    .sk-filewrap{display:flex;gap:14px;min-height:300px}
+    .sk-files{flex:0 0 230px;max-height:430px;overflow:auto;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-1)}
+    .sk-file{display:flex;align-items:center;gap:8px;width:100%;padding:7px 11px;font-size:12.5px;border:none;background:transparent;color:var(--dsw-alias-label-primary);cursor:pointer;text-align:left}
+    .sk-file:hover{background:var(--dsw-alias-interactive-bg-hover)}
+    .sk-file.on{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-state-business-primary)}
+    .sk-preview{flex:1;max-height:430px;overflow:auto;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-1);padding:14px}
+    .sk-meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+    .sk-meta div{background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:10px 12px;min-width:0}
+    .sk-tabpill{background:transparent;border:none;color:var(--dsw-alias-label-secondary);font-family:var(--dsw-font-family)}
     </style>`
 
-    class SkillsApp {
-      constructor(root, opts = {}) {
-        this.root = root
-        // Host shells (footer button / settings section) get notified on close so
-        // they can unmount their wrapper; otherwise the page removes itself.
-        this.onClosed = typeof opts.onClosed === 'function' ? opts.onClosed : undefined
-        this.data = { sources:[], market:[], installed:[] }
-        this.executors = []
-        this.filterExecutor = 'all'
-        // Executors tab has two browse modes: executor cards (no search) and a
-        // flat all-skills grid (global search + per-source filter).
-        this.executorView = 'cards'
-        this.allSourceFilter = 'all'
-        this.loading = true
-        this.viewMode = 'executors'
-        this.searchText = ""
-        this.filterSource = 'all'
-        this.activeSource = null
-        this.selectedSkill = null
-        this.selectedExecutor = null
-        this.drawerOpen = false
-        this.detailData = null
-        this._init()
-      }
+    // ── Fetch layer ─────────────────────────────────────────────────────────
 
-      async _init() {
-        document.head.insertAdjacentHTML('beforeend', STYLE)
-        this._render()
-        await this._loadData()
-        window._skillsInstall = (n, from) => this._install(n, from)
-        window._skillsView = (n) => this._viewInstalled(n)
-        window._skillsDelete = (n, ex) => this._delete(n, ex)
-        window._skillsCloseDrawer = () => this._closeDrawer()
-        window._skillsCopy = () => navigator.clipboard.writeText(this.detailData?.content || '')
-        window._skillsRefresh = () => this._loadData()
-      }
+    async function getJson(url) {
+      const r = await fetch(url)
+      if (!r.ok) throw new Error('HTTP ' + r.status)
+      return r.json()
+    }
 
-      /** Close path shared by header ✕; delegates to the shell when embedded. */
-      _closePage() {
-        if (this.onClosed !== undefined) { const cb = this.onClosed; this.onClosed = undefined; cb(); return }
-        this.root.remove()
-      }
+    // ── Small building blocks ────────────────────────────────────────────────
 
-      _render() {
-        this.root.innerHTML = '<div class="skills-page">' +
-          '<div class="skills-header"><h1 class="skills-title">Skills Management</h1><button class="skills-close" id="sk-close">x</button></div>' +
-          '<div class="skills-body"><div class="skills-inner">' +
-            '<div class="skills-tabs"><button class="skills-tab active" data-t="executors">Executors</button>' +
-              '<button class="skills-tab" data-t="market">Market</button>' +
-              '<button class="skills-tab" data-t="sources">Sources</button>' +
-              '<button class="skills-tab" data-t="installed">Installed</button></div>' +
-            '<div class="skills-toolbar" id="sk-toolbar"></div><div id="sk-content"></div>' +
-          '</div></div><div id="sk-drawer" class="skills-drawer"></div><div id="sk-backdrop" class="skills-backdrop"></div></div>'
-        this.root.querySelectorAll('.skills-tab').forEach(t => t.onclick = () => this._switchTab(t.dataset.t))
-        this.root.querySelector('#sk-close').onclick = () => this._closePage()
-        this.root.querySelector('#sk-backdrop').onclick = () => this._closeDrawer()
-        this._renderToolbar()
-        this._renderContent()
-      }
+    const Tag = ({ tone, children }) =>
+      h('span', { className: 'sk-tag' + (tone ? ' ' + tone : '') }, children)
 
-      _renderToolbar() {
-        const tb = this.root.querySelector('#sk-toolbar')
-        // The toolbar is rebuilt from scratch often (lazy scans, refreshes).
-        // Preserve the focused element's value AND caret so typing survives it.
-        const doc = this.root.ownerDocument
-        const prevActive = doc.activeElement
-        const preserveId = prevActive && tb.contains(prevActive) && prevActive.id ? prevActive.id : null
-        let preserveValue = null, preservePos = null
-        if (preserveId === 'sk-search') {
-          preserveValue = prevActive.value
-          try { preservePos = prevActive.selectionStart ?? preserveValue.length } catch { preservePos = preserveValue.length }
-        } else if (preserveId === 'sk-filter') {
-          preservePos = prevActive.selectedIndex
-        }
-        this._renderToolbarInto(tb)
-        if (preserveId !== null) {
-          const el = tb.querySelector('#' + preserveId)
-          if (el) {
-            if (preserveId === 'sk-search' && preserveValue !== null) el.value = preserveValue
-            el.focus()
-            if (preserveId === 'sk-search') { try { el.setSelectionRange(preservePos, preservePos) } catch {} }
-            else if (preservePos !== null) el.selectedIndex = preservePos
-          }
-        }
-      }
+    const Spinner = ({ label }) =>
+      h('div', { className: 'sk-loading' },
+        h('div', { className: 'sk-spin' }),
+        h('div', null, label))
 
-      _renderToolbarInto(tb) {
-        if (this.viewMode === 'executors') {
-          if (this.filterExecutor !== 'all') {
-            // Drilled into one executor — filter applies to that source only
-            const row = this.executors.find(x => x.key === this.filterExecutor)
-            tb.innerHTML = '<input class="skills-search" placeholder="Filter within ' + (row ? escapeHtml(row.label) : 'executor') + '…" id="sk-search">' +
-              '<div style="flex:1"></div><button class="skills-btn" id="sk-refresh">Refresh</button>'
-          } else if (this.executorView === 'cards') {
-            // Executor cards: navigation only, no skill search here
-            tb.innerHTML = '<span class="skills-source-label">Pick an executor to browse its skills, or view everything at once</span>' +
-              '<div style="flex:1"></div>' +
-              '<button class="skills-btn primary" id="sk-all">Browse all skills (' + this._executorSkillTotal() + ')</button>' +
-              '<div style="width:8px"></div><button class="skills-btn" id="sk-refresh">Refresh</button>'
-            tb.querySelector('#sk-all').onclick = () => { this.executorView = 'all'; this.searchText = ''; this.allSourceFilter = 'all'; this._renderToolbar(); this._renderContent() }
-          } else {
-            // All-skills grid — the only place with global search
-            const opts = this.executors.map(x => '<option value="' + x.key + '"' + (this.allSourceFilter === x.key ? ' selected' : '') + '>' + x.label + ' (' + this._execCount(x) + ')</option>').join('')
-            tb.innerHTML = '<input class="skills-search" placeholder="Search all skills..." id="sk-search">' +
-              '<select class="skills-select" id="sk-filter"><option value="all"' + (this.allSourceFilter === 'all' ? ' selected' : '') + '>All Executors (' + this._executorSkillTotal() + ')</option>' + opts + '</select>' +
-              '<div style="flex:1"></div><button class="skills-btn" id="sk-refresh">Refresh</button>'
-          }
-          const search = tb.querySelector('#sk-search')
-          if (search) search.oninput = (e) => { this.searchText = e.target.value; this._renderContent() }
-          const filter = tb.querySelector('#sk-filter')
-          if (filter) filter.onchange = (e) => {
-            this.allSourceFilter = e.target.value
-            if (e.target.value !== 'all') {   // picking a source drills into it
-              this.filterExecutor = e.target.value
-              this.searchText = ''
-              this._renderToolbar(); this._renderContent()
-            } else this._renderContent()
-          }
-          tb.querySelector('#sk-refresh').onclick = () => this._loadData()
-        } else if (this.viewMode === 'sources') {
-          tb.innerHTML = '<input class="skills-search" placeholder="Search sources..." id="sk-search">' +
-            '<div style="flex:1"></div><button class="skills-btn" id="sk-refresh">Refresh</button>'
-          tb.querySelector('#sk-search').oninput = (e) => { this.searchText = e.target.value; this._renderContent() }
-          tb.querySelector('#sk-refresh').onclick = () => this._loadData()
-        } else if (this.viewMode === 'market') {
-          const opts = this.data.sources.map(s => '<option value="' + s.source + '"' + (this.filterSource === s.source ? ' selected' : '') + '>' + (s.displayName||s.source) + ' (' + s.skills + ')</option>').join('')
-          tb.innerHTML = '<input class="skills-search" placeholder="Search skills..." id="sk-search">' +
-            '<select class="skills-select" id="sk-filter"><option value="all">All Sources</option>' + opts + '</select>' +
-            '<div style="flex:1"></div><button class="skills-btn" id="sk-refresh">Refresh</button>'
-          tb.querySelector('#sk-search').oninput = (e) => { this.searchText = e.target.value; this._renderContent() }
-          tb.querySelector('#sk-filter').onchange = (e) => { this.filterSource = e.target.value; this._renderContent() }
-          tb.querySelector('#sk-refresh').onclick = () => this._loadData()
-        } else {
-          tb.innerHTML = '<input class="skills-search" placeholder="Search installed..." id="sk-search">' +
-            '<div style="flex:1"></div><button class="skills-btn" id="sk-refresh">Refresh</button>'
-          tb.querySelector('#sk-search').oninput = (e) => { this.searchText = e.target.value; this._renderContent() }
-          tb.querySelector('#sk-refresh').onclick = () => this._loadData()
-        }
-      }
+    const Empty = ({ children }) => h('div', { className: 'sk-empty' }, children)
 
-      _renderContent() {
-        const c = this.root.querySelector('#sk-content')
-        if (this.loading) { c.innerHTML = '<div class="skills-loading"><div class="skills-spinner"></div><div>Loading...</div></div>'; return }
-        if (this.viewMode === 'executors') this._renderExecutors(c)
-        else if (this.viewMode === 'sources') this._renderSources(c)
-        else if (this.viewMode === 'market') this._renderMarket(c)
-        else this._renderInstalled(c)
-      }
+    function Avatar({ name }) {
+      return h('div', { className: 'sk-avatar', style: { background: gradient(name) } },
+        (name[0] || '?').toUpperCase())
+    }
 
-      _executorSkillTotal() {
-        return this.executors.reduce((sum, x) => sum + this._execCount(x), 0)
-      }
-
-      /** Summary rows carry only skillCount; drilled-in rows also hold skills[]. */
-      _execCount(row) {
-        return Array.isArray(row.skills) ? row.skills.length : (row.skillCount || 0)
-      }
-
-      /**
-       * Render items into a container pageSize at a time; a trailing button
-       * appends the next chunk (keeps the DOM small for big executors).
-       */
-      _renderPaged(container, items, makeCard, pageSize = 60) {
-        let cursor = 0
-        const moreBtn = document.createElement('button')
-        moreBtn.className = 'skills-btn'
-        moreBtn.style.gridColumn = '1/-1'
-        const placeMore = () => {
-          if (cursor < items.length) {
-            moreBtn.textContent = 'Show more (' + (items.length - cursor) + ' remaining)'
-            container.appendChild(moreBtn)
-          } else if (moreBtn.parentNode) { moreBtn.parentNode.removeChild(moreBtn) }
-        }
-        moreBtn.onclick = () => {
-          moreBtn.parentNode && moreBtn.parentNode.removeChild(moreBtn)
-          this._paintPage(container, items, cursor, pageSize, makeCard)
-          cursor = Math.min(cursor + pageSize, items.length)
-          placeMore()
-        }
-        this._paintPage(container, items, cursor, pageSize, makeCard)
-        cursor = Math.min(cursor + pageSize, items.length)
-        placeMore()
-      }
-
-      _paintPage(container, items, cursor, pageSize, makeCard) {
-        for (const item of items.slice(cursor, cursor + pageSize)) makeCard(item)
-      }
-
-      // ── Executors tab ──
-
-      _renderExecutors(c) {
-        if (this.filterExecutor !== 'all') return this._renderDrillIn(c)
-        if (this.executorView === 'all') return this._renderAllSkills(c)
-        return this._renderExecutorOverview(c)
-      }
-
-      _backToExecutors() {
-        this.filterExecutor = 'all'
-        this.searchText = ''
-        this._renderToolbar()
-        this._renderContent()
-      }
-
-      _drillBackLabel() {
-        return this.executorView === 'all' ? '&larr; All skills' : '&larr; Executors'
-      }
-
-      _renderDrillIn(c) {
-        const row = this.executors.find(x => x.key === this.filterExecutor)
-        if (!row) { c.innerHTML = ''; return }
-        if (!row.dirExists) {
-          c.innerHTML = '<div class="skills-empty"><div class="skills-empty-title">' + row.label + ': directory not found</div>' +
-            '<div class="skills-empty-hint">Expected skills at ' + escapeHtml(row.dir) + '</div>' +
-            '<button class="skills-btn" id="sk-back-exec">' + this._drillBackLabel() + '</button></div>'
-          c.querySelector('#sk-back-exec').onclick = () => this._backToExecutors()
-          return
-        }
-        // Summary rows carry no skill list yet — fetch just this source on demand
-        if (!Array.isArray(row.skills)) {
-          const seq = (this._detailSeq = (this._detailSeq || 0) + 1)
-          c.innerHTML = '<div class="skills-loading"><div class="skills-spinner"></div><div>Scanning ' + escapeHtml(row.label) + '…</div></div>'
-          fetch(API + '/executors?executor=' + encodeURIComponent(row.key))
-            .then(async (r) => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json() })
-            .then((d) => { Object.assign(row, d.executor) })
-            .catch(() => { row.skills = [] })
-            .finally(() => {
-              if (seq !== this._detailSeq || this.viewMode !== 'executors' || this.filterExecutor !== row.key) return
-              this._renderContent()
+    /** Executor dropdown built on Menu (primitives have no Select). */
+    function SourceFilter({ rows, value, onChange, t }) {
+      const [open, setOpen] = useState(false)
+      const anchorRef = useRef(null)
+      const current = value === 'all' ? null : rows.find(r => r.key === value)
+      const label = value === 'all'
+        ? `${t('pickSource')} (${rows.reduce((a, r) => a + r.skillCount, 0)})`
+        : `${current ? current.label : value} (${current ? current.skillCount : 0})`
+      return h('span', { ref: anchorRef, style: { position: 'relative' } },
+        prim('Button') && P.Button
+          ? h(P.Button, { variant: 'outline', size: 'sm', ref: undefined,
+              onClick: () => setOpen(o => !o), title: label },
+              h('span', { ref: anchorRef, style: { display: 'inline-flex', alignItems: 'center', gap: 6 } },
+                label,
+                P.IconChevronDownOutline14 ? h(P.IconChevronDownOutline14, { size: 12 }) : '▾'))
+          : h('button', { className: 'sk-btn-fallback', onClick: () => setOpen(o => !o), style: { position: 'relative' } },
+              h('span', { ref: anchorRef }, label, ' ▾')),
+        open && prim('Menu')
+          ? h(P.Menu, {
+              open,
+              anchor: anchorRef.current,
+              align: 'start',
+              items: [
+                { id: 'all', label: `${t('pickSource')} (${rows.reduce((a, r) => a + r.skillCount, 0)})` },
+                ...rows.map(x => ({ id: x.key, label: `${x.label} (${x.skillCount})` })),
+              ],
+              selectedId: value,
+              onSelect: (id) => { onChange(id); setOpen(false) },
+              onClose: () => setOpen(false),
             })
-          return
-        }
-        let sk = row.skills
-        if (this.searchText) {
-          const l = this.searchText.toLowerCase()
-          sk = sk.filter(s => (s.name||'').toLowerCase().includes(l) || (s.description||'').toLowerCase().includes(l) || (s.keywords||[]).some(k => k.toLowerCase().includes(l)))
-        }
-        if (!sk.length) { c.innerHTML = '<div class="skills-empty"><div class="skills-empty-title">' + (this.searchText ? 'No matching skills' : 'No skills in ' + row.label) + '</div>' +
-          '<button class="skills-btn" id="sk-back-exec">' + this._drillBackLabel() + '</button></div>';
-          c.querySelector('#sk-back-exec').onclick = () => this._backToExecutors()
-          return }
+          : null)
+    }
 
-        const head = document.createElement('div')
-        head.style.cssText = 'display:flex;align-items:center;gap:10px'
-        head.innerHTML = '<button class="skills-btn" id="sk-back-exec">' + this._drillBackLabel() + '</button>' +
-          '<span class="skills-card-title">' + escapeHtml(row.label) + '</span>' +
-          '<span class="skills-tag">' + sk.length + ' skills</span>' +
-          (row.readOnly ? '<span class="skills-tag readonly">read-only</span>' : '') +
-          '<span style="flex:1"></span><span class="skills-source-dir">' + escapeHtml(row.dir) + '</span>'
-        c.innerHTML = ''; c.appendChild(head)
-        head.querySelector('#sk-back-exec').onclick = () => this._backToExecutors()
+    // ── Skill / executor cards ───────────────────────────────────────────────
 
-        const g = document.createElement('div'); g.className = 'skills-grid'; g.style.marginTop = '12px'
-        this._renderPaged(g, sk, (s) => this._appendExecutorCard(g, row, s))
-        c.appendChild(g)
+    function SkillCard({ row, s, t, onOpen, onInstall, onDelete }) {
+      const name = shortName(s.name)
+      return h('div', { className: 'sk-card', role: 'button', tabIndex: 0,
+          onClick: () => onOpen(s),
+          onKeyDown: e => e.key === 'Enter' && onOpen(s) },
+        h('div', { style: { display: 'flex', gap: 12, alignItems: 'center' } },
+          h(Avatar, { name }),
+          h('div', { style: { minWidth: 0 } },
+            h('div', { className: 'sk-title' }, name),
+            h('div', { className: 'sk-dir' }, `${s.fileCount || 0} · ${formatSize(s.totalSize || 0)} · ${formatTime(s.modifiedAt)}`))),
+        h('div', { className: 'sk-desc' }, s.description || ''),
+        h('div', { className: 'sk-foot' },
+          h('div', { className: 'sk-chips' },
+            h(Tag, null, row.label),
+            row.readOnly && h(Tag, { tone: 'danger' }, t('readOnlyTag')),
+            s.version && h(Tag, { tone: 'accent' }, 'v' + s.version)),
+          h('div', { className: 'sk-rowbtns' },
+            row.key !== 'dsh' && h(ButtonLite, { primary: true, small: true,
+              onClick: e => { e.stopPropagation(); onInstall(row, s.name) } }, t('toDsh')),
+            !row.readOnly && h(ButtonLite, { danger: true, small: true,
+              onClick: e => { e.stopPropagation(); onDelete(row, s.name) } }, t('deleteBtn')))))
+    }
+
+    /** Tiny variant buttons before P.Button availability resolution settles —
+     *  unified through primitives in the browser via data-p-* swap below. */
+    function ButtonLite({ primary, danger, small, children, onClick }) {
+      if (prim('Button')) {
+        return h(P.Button, {
+          variant: primary ? 'primary' : 'outline',
+          size: small ? 'sm' : 'md',
+          onClick,
+        }, children)
+      }
+      return h('button', {
+        onClick,
+        'data-p': primary ? 'primary' : danger ? 'danger' : 'outline',
+      }, children)
+    }
+
+    function ExecutorCard({ row, t, onEnter }) {
+      const count = Array.isArray(row.skills) ? row.skills.length : (row.skillCount || 0)
+      const sizeTotal = Array.isArray(row.skills) ? row.skills.reduce((a, s) => a + (s.totalSize || 0), 0) : null
+      return h('div', { className: 'sk-card', role: 'button', tabIndex: 0, style: !row.dirExists ? { opacity: 0.5, cursor: 'default' } : undefined,
+          onClick: () => row.dirExists && onEnter(row.key),
+          onKeyDown: e => e.key === 'Enter' && row.dirExists && onEnter(row.key) },
+        h('div', { className: 'sk-head' },
+          h('span', { className: 'sk-title' }, row.label),
+          row.readOnly && h(Tag, { tone: 'danger' }, t('readOnlyTag')),
+          row.key === 'dsh' && h(Tag, { tone: 'accent' }, t('meTag'))),
+        h('div', { className: 'sk-count' + (count ? '' : ' none') }, row.dirExists ? String(count) : '—'),
+        h('div', { className: 'sk-hint' }, row.dirExists ? `${t('skillsSuffix')}${sizeTotal != null ? ' · ' + formatSize(sizeTotal) : ''}` : t('dirNotPresent')),
+        h('div', { className: 'sk-dir' }, row.dir))
+    }
+
+    // ── Detail modal ─────────────────────────────────────────────────────────
+
+    function DetailModal({ sel, executors, t, onClose, onInstalled, onDeleted }) {
+      const [data, setData] = useState(null)
+      const [file, setFile] = useState(null)
+      const [fileText, setFileText] = useState('')
+      const [confirming, setConfirming] = useState(false)
+      const [toast, setToast] = useState(false)
+      const row = sel.executorKey ? executors.find(x => x.key === sel.executorKey) : null
+
+      useEffect(() => {
+        let alive = true
+        setData(null)
+        const q = `?name=${encodeURIComponent(sel.name)}${sel.executorKey ? '&executor=' + encodeURIComponent(sel.executorKey) : ''}`
+        getJson(API + '/detail' + q).then(d => { if (alive) setData(d) }).catch(() => {})
+        return () => { alive = false }
+      }, [sel])
+
+      const openFile = (f) => {
+        setFile(f)
+        const q = `?name=${encodeURIComponent(sel.name)}&path=${encodeURIComponent(f.path)}${sel.executorKey ? '&executor=' + encodeURIComponent(sel.executorKey) : ''}`
+        fetch(API + '/file' + q).then(r => { if (!r.ok) throw 0; return r.text() }).then(setFileText).catch(() => setFileText(''))
       }
 
-      /** Flat grid of every executor's skills — the global-search surface. */
-      _renderAllSkills(c) {
-        const pending = this.executors.some(x => x.dirExists && !Array.isArray(x.skills))
-        if (pending) {
-          c.innerHTML = '<div class="skills-loading"><div class="skills-spinner"></div><div>Loading all executor catalogs…</div></div>'
-          this._ensureCatalog()
-          return
-        }
-        let items = []
-        for (const row of this.executors) {
-          if (!row.dirExists || !Array.isArray(row.skills)) continue
-          if (this.allSourceFilter !== 'all' && row.key !== this.allSourceFilter) continue
-          for (const s of row.skills) items.push({ row, s })
-        }
-        if (this.searchText) {
-          const l = this.searchText.toLowerCase()
-          items = items.filter(it => (it.s.name||'').toLowerCase().includes(l) ||
-            (it.s.description||'').toLowerCase().includes(l) ||
-            (it.s.keywords||[]).some(k => k.toLowerCase().includes(l)))
-        }
-        const filteredByChip = this.allSourceFilter !== 'all'
-          ? ' <span class="skills-tag version">in ' + escapeHtml((this.executors.find(x => x.key === this.allSourceFilter) || {}).label || this.allSourceFilter) + '</span>' : ''
-
-        const head = document.createElement('div')
-        head.style.cssText = 'display:flex;align-items:center;gap:10px'
-        head.innerHTML = '<button class="skills-btn" id="sk-cards">&larr; Executor cards</button>' +
-          '<span class="skills-card-title">All Skills</span>' +
-          '<span class="skills-tag">' + items.length + ' skills</span>' + filteredByChip +
-          '<span style="flex:1"></span>'
-        c.innerHTML = ''; c.appendChild(head)
-        head.querySelector('#sk-cards').onclick = () => { this.executorView = 'cards'; this.searchText = ''; this.allSourceFilter = 'all'; this._renderToolbar(); this._renderContent() }
-        if (!items.length) {
-          const empty = document.createElement('div'); empty.className = 'skills-empty'; empty.style.marginTop = '12px'
-          empty.innerHTML = '<div class="skills-empty-title">' + (this.searchText ? 'No matching skills' : 'No skills found') + '</div>'
-          c.appendChild(empty)
-          return
-        }
-        const g = document.createElement('div'); g.className = 'skills-grid'; g.style.marginTop = '12px'
-        this._renderPaged(g, items, (it) => this._appendExecutorCard(g, it.row, it.s))
-        c.appendChild(g)
-      }
-
-      _appendExecutorCard(grid, row, s) {
-        const shortName = splitSkillName(s.name).shortName || s.name
-        const tags = ['<span class="skills-tag">' + escapeHtml(row.label) + '</span>']
-        if (row.readOnly) tags.push('<span class="skills-tag readonly">read-only</span>')
-        if (s.version) tags.push('<span class="skills-tag version">v' + escapeHtml(s.version) + '</span>')
-        const metaBits = (s.fileCount||0) + ' files · ' + formatSize(s.totalSize||0)
-        const buttons = []
-        if (row.key !== 'dsh') buttons.push('<button class="skills-btn primary" data-act="install" style="padding:4px 12px;font-size:12px">To DSH</button>')
-        if (!row.readOnly) buttons.push('<button class="skills-btn danger" data-act="delete" style="padding:4px 12px;font-size:12px">Delete</button>')
-        const card = document.createElement('div'); card.className = 'skills-card'
-        card.innerHTML = '<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">' +
-            '<div class="skills-card-avatar" style="margin:0;background:' + generateGradient(shortName) + '">' + escapeHtml(shortName.charAt(0).toUpperCase()) + '</div>' +
-            '<div style="min-width:0"><div class="skills-card-title">' + escapeHtml(shortName) + '</div>' +
-            '<div style="font-size:11px;color:#999">' + metaBits + ' · ' + formatTime(s.modifiedAt) + '</div></div></div>' +
-          '<div class="skills-card-desc">' + escapeHtml(s.description || 'No description') + '</div>' +
-          '<div class="skills-card-footer"><div class="skills-card-tags">' + tags.join('') + '</div>' +
-          '<div style="display:flex;gap:6px">' + buttons.join('') + '</div></div>'
-        card.onclick = () => this._openDetail({ name: s.name, shortName }, row.key)
-        card.querySelectorAll('[data-act]').forEach(btn => {
-          btn.onclick = (e) => {
-            e.stopPropagation()
-            if (btn.dataset.act === 'install') this._installFromExecutor(row, s.name)
-            else this._delete(s.name, row.key)
-          }
-        })
-        grid.appendChild(card)
-      }
-
-      /** Executor cards — pure navigation, no skill search here. */
-      _renderExecutorOverview(c) {
-        if (!this.executors.length && !this.loading) { c.innerHTML = '<div class="skills-empty"><div class="skills-empty-title">No executor directories found on this machine</div></div>'; return }
-        const visible = this.executors.filter(r => r.dirExists)
-        const missing = this.executors.filter(r => !r.dirExists)
-        const g = document.createElement('div'); g.className = 'skills-source-grid'
-        visible.forEach(x => {
-          const count = this._execCount(x)
-          const sizeBit = Array.isArray(x.skills)
-            ? ' · total ' + formatSize(x.skills.reduce((a, s) => a + (s.totalSize||0), 0))
-            : ''
-          const card = document.createElement('div'); card.className = 'skills-source-card'
-          card.innerHTML = '<div class="skills-source-name">' + escapeHtml(x.label) +
-            (x.readOnly ? ' <span class="skills-tag readonly">read-only</span>' : '') +
-            (x.key === 'dsh' ? ' <span class="skills-tag version">me</span>' : '') + '</div>' +
-            '<div class="skills-source-count' + (count ? '' : ' none') + '">' + count + '</div>' +
-            '<div class="skills-source-label">skills' + sizeBit + '</div>' +
-            '<div class="skills-source-dir">' + escapeHtml(x.dir) + '</div>'
-          card.onclick = () => { this.filterExecutor = x.key; this.searchText = ''; this._renderToolbar(); this._renderContent() }
-          g.appendChild(card)
-        })
-        c.innerHTML = ''
-        c.appendChild(g)
-        if (missing.length) {
-          const t = document.createElement('div'); t.className = 'skills-section-title'; t.textContent = 'Not found on this machine (' + missing.length + ')'
-          const mg = document.createElement('div'); mg.className = 'skills-source-grid'
-          missing.forEach(x => {
-            const card = document.createElement('div'); card.className = 'skills-source-card missing'
-            card.innerHTML = '<div class="skills-source-name">' + escapeHtml(x.label) + '</div>' +
-              '<div class="skills-source-count none">-</div>' +
-              '<div class="skills-source-label">directory not present</div>' +
-              '<div class="skills-source-dir">' + escapeHtml(x.dir) + '</div>'
-            mg.appendChild(card)
-          })
-          c.appendChild(t); c.appendChild(mg)
-        }
-      }
-
-      /** Load every drilled-in catalog lazily, for cross-executor search. */
-      _ensureCatalog() {
-        if (this._catalogLoading) return
-        this._catalogLoading = true
-        const targets = this.executors.filter(x => x.dirExists && !Array.isArray(x.skills))
-        Promise.all(targets.map((x) =>
-          fetch(API + '/executors?executor=' + encodeURIComponent(x.key))
-            .then(async (r) => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json() })
-            .then((d) => { Object.assign(x, d.executor) })
-            .catch(() => { x.skills = []; x.skillCount = 0 })
-        )).finally(() => {
-          this._catalogLoading = false
-          if (this.viewMode !== 'executors') return
-          this._renderToolbar()
-          this._renderContent()
-        })
-      }
-
-      // ── Sources / Market / Installed tabs (market collection) ──
-
-      _renderSources(c) {
-        let srcs = this.data.sources
-        if (this.searchText) { const l = this.searchText.toLowerCase(); srcs = srcs.filter(s => (s.source||'').toLowerCase().includes(l) || (s.displayName||'').toLowerCase().includes(l)) }
-        if (!srcs.length) { c.innerHTML = '<div class="skills-empty"><div class="skills-empty-title">No sources found</div></div>'; return }
-        const g = document.createElement('div'); g.className = 'skills-source-grid'
-        srcs.forEach(s => {
-          const cnt = this.data.market.filter(m => m.source === s.source).length
-          const card = document.createElement('div'); card.className = 'skills-source-card'
-          card.innerHTML = '<div class="skills-source-name">' + (s.displayName||s.source) + '</div><div class="skills-source-count">' + cnt + '</div><div class="skills-source-label">skills</div>'
-          card.onclick = () => { this.activeSource = s.source; this._switchTab('market') }
-          g.appendChild(card)
-        })
-        c.innerHTML = ''; c.appendChild(g)
-      }
-
-      _renderMarket(c) {
-        let sk = this.data.market
-        if (this.activeSource) sk = sk.filter(s => s.source === this.activeSource)
-        else if (this.filterSource !== 'all') sk = sk.filter(s => s.source === this.filterSource)
-        if (this.searchText) { const l = this.searchText.toLowerCase(); sk = sk.filter(s => (s.name||'').toLowerCase().includes(l) || (s.shortName||'').toLowerCase().includes(l) || (s.description||'').toLowerCase().includes(l)) }
-        if (!sk.length) { c.innerHTML = '<div class="skills-empty"><div class="skills-empty-title">' + (this.searchText ? 'No matching skills' : 'No skills in market') + '</div></div>'; return }
-        const g = document.createElement('div'); g.className = 'skills-grid'
-        this._renderPaged(g, sk, (s) => {
-          const {category, shortName} = splitSkillName(s.name || s.shortName || '')
-          const name = shortName || s.shortName || s.name
-          const grad = generateGradient(name)
-          const tags = []
-          if (category) tags.push('<span class="skills-tag">' + category + '</span>')
-          if (s.version) tags.push('<span class="skills-tag version">v' + escapeHtml(s.version) + '</span>')
-          const installBtn = s.installed ? '<span class="skills-tag version">Installed</span>' : '<button class="skills-btn primary" style="padding:4px 12px;font-size:12px">Install</button>'
-          const card = document.createElement('div'); card.className = 'skills-card'
-          card.innerHTML = '<div class="skills-card-avatar" style="background:' + grad + '">' + name.charAt(0).toUpperCase() + '</div>' +
-            '<div class="skills-card-title">' + name + '</div><div class="skills-card-desc">' + escapeHtml(s.description||'No description') + '</div>' +
-            '<div class="skills-card-footer"><div class="skills-card-tags">' + tags.join('') + '</div>' + installBtn + '</div>'
-          card.onclick = () => this._openDetail(s, null)
-          const btn = card.querySelector('.skills-btn.primary')
-          if (btn) btn.onclick = (e) => { e.stopPropagation(); this._install(s.name) }
-          g.appendChild(card)
-        })
-        c.innerHTML = ''; c.appendChild(g)
-      }
-
-      _renderInstalled(c) {
-        let sk = this.data.installed
-        if (this.searchText) { const l = this.searchText.toLowerCase(); sk = sk.filter(s => (s.name||'').toLowerCase().includes(l) || (s.description||'').toLowerCase().includes(l)) }
-        if (!sk.length) {
-          c.innerHTML = '<div class="skills-empty"><div class="skills-empty-title">No skills installed</div>' +
-            '<div class="skills-empty-hint">Go to Market or Executors tab to install</div>' +
-            '<button class="skills-btn primary" id="sk-go-market">Go to Market</button></div>'
-          c.querySelector('#sk-go-market').onclick = () => this._switchTab('market')
-          return
-        }
-        const list = document.createElement('div'); list.className = 'skills-list'
-        sk.forEach(s => {
-          const item = document.createElement('div'); item.className = 'skills-list-item'
-          item.innerHTML = '<div style="flex:1"><div class="skills-list-name">' + s.name + '</div>' +
-            '<div class="skills-list-meta">' + (s.fileCount||0) + ' files - ' + formatSize(s.totalSize||0) + ' - ' + formatTime(s.modifiedAt) + '</div></div>' +
-            '<div style="display:flex;gap:8px"><button class="skills-btn" style="padding:4px 12px;font-size:12px">Detail</button>' +
-            '<button class="skills-btn danger" style="padding:4px 12px;font-size:12px">Delete</button></div>'
-          item.querySelector('.skills-btn').onclick = (e) => { e.stopPropagation(); this._openDetail({name:s.name, shortName:s.name}, 'dsh') }
-          item.querySelector('.skills-btn.danger').onclick = (e) => { e.stopPropagation(); this._delete(s.name, 'dsh') }
-          list.appendChild(item)
-        })
-        c.innerHTML = ''; c.appendChild(list)
-      }
-
-      _switchTab(mode) {
-        this.viewMode = mode; this.searchText = ''; this.filterSource = 'all'; this.activeSource = null; this.filterExecutor = 'all'
-        this.executorView = 'cards'; this.allSourceFilter = 'all'
-        this.root.querySelectorAll('.skills-tab').forEach(t => t.classList.toggle('active', t.dataset.t === mode))
-        this._renderToolbar(); this._renderContent()
-      }
-
-      async _loadData() {
-        this.loading = true; this._renderToolbar(); this._renderContent()
+      const doDelete = async () => {
         try {
-          // Executors load as counts only; each source's list is fetched lazily on drill-in
-          const [baseR, execR] = await Promise.all([fetch(API), fetch(API + '/executors?mode=summary')])
-          if (!baseR.ok) throw new Error('HTTP ' + baseR.status)
-          this.data = await baseR.json()
-          if (execR.ok) { const d = await execR.json(); this.executors = d.executors || [] } else { this.executors = [] }
-        } catch (e) { console.error('Load failed:', e) }
-        finally { this.loading = false; this._renderToolbar(); this._renderContent() }
+          const body = { name: sel.name }
+          if (sel.executorKey) body.executor = sel.executorKey
+          const r = await fetch(API, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+          if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status)
+          setConfirming(false)
+          onDeleted()
+        } catch (e) { setConfirming(false); alert(t('operationFailed') + ': ' + e.message) }
       }
 
-      async _openDetail(skill, executorKey) {
-        this.selectedSkill = skill; this.selectedExecutor = executorKey; this.drawerOpen = true; this.detailData = null; this._renderDrawer()
+      const doInstall = async () => {
         try {
-          const q = '?name=' + encodeURIComponent(skill.name) + (executorKey ? '&executor=' + encodeURIComponent(executorKey) : '')
-          const r = await fetch(API + '/detail' + q)
-          if (!r.ok) throw new Error('HTTP ' + r.status)
-          this.detailData = await r.json(); this._renderDrawer()
-        } catch (e) { console.error('Detail failed:', e) }
+          const body = { name: sel.name }
+          if (sel.executorKey && sel.executorKey !== 'dsh') body.from = sel.executorKey
+          const r = await fetch(API + '/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+          if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status)
+          onInstalled()
+        } catch (e) { alert(t('operationFailed') + ': ' + e.message) }
       }
 
-      async _viewInstalled(name) {
-        try {
-          const r = await fetch(API + '/detail?name=' + encodeURIComponent(name))
-          if (!r.ok) throw new Error('HTTP ' + r.status)
-          this.detailData = await r.json()
-          this.selectedExecutor = this.detailData.executor || 'dsh'
-          this.selectedSkill = {name, shortName:name, source:'', description:this.detailData.meta?.description||'', keywords:[], installed:true, totalSize:this.detailData.totalSize}
-          this.drawerOpen = true; this._renderDrawer()
-        } catch (e) { console.error('Detail failed:', e) }
+      const copyContent = () => {
+        navigator.clipboard.writeText(data?.content || '').then(() => {
+          setToast(true)
+        }).catch(() => {})
       }
 
-      _renderDrawer() {
-        const d = this.root.querySelector('#sk-drawer')
-        const b = this.root.querySelector('#sk-backdrop')
-        d.classList.toggle('open', this.drawerOpen)
-        b.classList.toggle('visible', this.drawerOpen)
-        if (!this.drawerOpen) return
-        const skill = this.selectedSkill
-        const detail = this.detailData
-        const meta = detail?.meta || {}
-        const files = detail?.files || []
-        const content = detail?.content || detail?.contentWithMeta || ''
-        const executorKey = this.selectedExecutor || detail?.executor || null
-        const exRow = executorKey ? this.executors.find(x => x.key === executorKey) : null
+      const meta = data?.meta || {}
+      const files = data?.files || []
+      const isMd = file ? file.path.endsWith('.md') : true
 
-        let metaHtml = '<div class="skills-meta-grid">' +
-          '<div class="skills-meta-item"><div class="skills-meta-label">Source</div><div class="skills-meta-value">' + (exRow ? exRow.label : ((detail?.name||'').split('/')[0] || '-')) + '</div></div>' +
-          '<div class="skills-meta-item"><div class="skills-meta-label">Files</div><div class="skills-meta-value">' + (detail?.fileCount||0) + '</div></div>' +
-          '<div class="skills-meta-item"><div class="skills-meta-label">Size</div><div class="skills-meta-value">' + formatSize(detail?.totalSize||0) + '</div></div>'
-        if (detail?.dir) metaHtml += '<div class="skills-meta-item" style="grid-column:1/-1"><div class="skills-meta-label">Path</div><div class="skills-meta-value">' + escapeHtml(detail.dir) + '</div></div>'
-        if (meta.version) metaHtml += '<div class="skills-meta-item"><div class="skills-meta-label">Version</div><div class="skills-meta-value">' + escapeHtml(meta.version) + '</div></div>'
-        if (meta.author) metaHtml += '<div class="skills-meta-item"><div class="skills-meta-label">Author</div><div class="skills-meta-value">' + escapeHtml(meta.author) + '</div></div>'
-        metaHtml += '</div>'
+      return h('div', null,
+        prim('Modal')
+          ? h(P.Modal, { open: true, onClose, title: shortName(sel.name), closeLabel: t('close'), contentClassName: 'sk-modal-wide' },
+              h('div', { className: 'sk-page' },
+                h('div', { className: 'sk-hint' }, meta.description || meta.whenToUse || ''),
+                h('div', { className: 'sk-toolbar' },
+                  row && row.key !== 'dsh' && h(P.Button, { variant: 'primary', size: 'sm', onClick: doInstall }, `${t('installFrom', { label: row.label })}`),
+                  row && row.key === 'dsh' && h(Tag, { tone: 'ok' }, t('activeInDsh')),
+                  row && row.readOnly && h(Tag, { tone: 'danger' }, t('readOnlyTag')),
+                  h(P.Button, { variant: 'outline', size: 'sm', onClick: copyContent }, t('copy')),
+                  h('span', { className: 'spacer' }),
+                  row && !row.readOnly && h(P.Button, { variant: 'outline', size: 'sm', onClick: () => setConfirming(true) }, t('deleteBtn'))),
+                h('div', { className: 'sk-meta' },
+                  h('div', null, h('div', { className: 'sk-dir' }, t('pathLabel')), h('div', { className: 'sk-hint' }, data?.dir || '-')),
+                  h('div', null, h('div', { className: 'sk-dir' }, t('filesCount', { n: data?.fileCount ?? 0 })), h('div', { className: 'sk-hint' }, formatSize(data?.totalSize || 0))),
+                  meta.version && h('div', null, h('div', { className: 'sk-dir' }, 'Version'), h('div', { className: 'sk-hint' }, 'v' + meta.version)),
+                  meta.author && h('div', null, h('div', { className: 'sk-dir' }, 'Author'), h('div', { className: 'sk-hint' }, meta.author))),
+                files.length
+                  ? h('div', { className: 'sk-filewrap' },
+                      h('div', { className: 'sk-files' }, files.map(f =>
+                        h('button', { key: f.path, className: 'sk-file' + ((file ? f.path === file.path : f.path === 'SKILL.md') ? ' on' : ''), onClick: () => openFile(f) },
+                          h('span', { style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, f.path),
+                          h('span', { className: 'sk-dir' }, formatSize(f.size))))),
+                      h('div', { className: 'sk-preview sk-md' },
+                        isMd && prim('MarkdownText')
+                          ? h(P.MarkdownText, { text: file ? fileText : (data?.content || '') })
+                          : h('pre', { style: { whiteSpace: 'pre-wrap', margin: 0, fontFamily: 'var(--dsw-font-family)' } }, file ? fileText : (data?.content || ''))))
+                  : h('div', { className: 'sk-preview sk-md' },
+                      prim('MarkdownText')
+                        ? h(P.MarkdownText, { text: data?.content || '' })
+                        : h('pre', { style: { whiteSpace: 'pre-wrap', margin: 0 } }, data?.content || ''))))
+            : null,
+        confirming && prim('Modal')
+          ? h(P.Modal, { open: true, onClose: () => setConfirming(false), title: t('deleteConfirm', { name: sel.name, where: row ? row.label : t('whereDsh') }), footer:
+              h('div', { className: 'sk-toolbar', style: { justifyContent: 'flex-end' } },
+                h(P.Button, { variant: 'ghost', size: 'sm', onClick: () => setConfirming(false) }, t('close')),
+                h(P.Button, { variant: 'primary', size: 'sm', onClick: doDelete }, t('deleteBtn'))) }, null)
+          : null,
+        toast && prim('Toast')
+          ? h(P.Toast, { text: t('copied'), onDone: () => setToast(false) })
+          : null)
+    }
 
-        let filesHtml = ''
-        if (files.length) {
-          filesHtml = '<div class="skills-section-title">Files (' + files.length + ')</div><div class="skills-file-browser">' +
-            '<div class="skills-file-list">' + files.map((f,i) =>
-              '<div class="skills-file-item' + (i===0?' selected':'') + '" data-path="' + escapeHtml(f.path) + '">' +
-              '<span style="color:' + getFileColor(f.path) + '">F</span>' +
-              '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(f.path) + '</span>' +
-              '<span style="font-size:11px;color:#999">' + formatSize(f.size) + '</span></div>'
-            ).join('') + '</div>' +
-            '<div class="skills-file-preview" id="sk-preview"><div class="skills-file-content skills-md-content">' + renderMarkdown(content) + '</div></div></div>'
+    // ── Views ────────────────────────────────────────────────────────────────
+
+    function CardsView({ executors, t, onEnter, onBrowseAll }) {
+      if (!executors.length) return h(Empty, null, t('noExecutors'))
+      const present = executors.filter(r => r.dirExists)
+      const missing = executors.filter(r => !r.dirExists)
+      return [
+        h('div', { className: 'sk-toolbar' },
+          h('span', { className: 'sk-hint' }, t('cardsHint')),
+          h('span', { className: 'spacer' }),
+          h(P.Button, { variant: 'primary', size: 'sm', onClick: onBrowseAll }, `${t('browseAll')} (${executors.reduce((a, r) => a + r.skillCount, 0)})`),
+          h('span', { style: { width: 6 } }),
+          h('span', { className: 'sk-refresh-slot' })),
+        h('div', { className: 'sk-src' },
+          present.map(row => h(ExecutorCard, { key: row.key, row, t, onEnter }))),
+        missing.length > 0 && [
+          h('div', { className: 'sk-hint', style: { marginTop: 6 } }, t('notFoundGroup', { n: missing.length })),
+          h('div', { className: 'sk-src' },
+            missing.map(row => h(ExecutorCard, { key: row.key, row, t, onEnter }))),
+        ],
+      ]
+    }
+
+    function AllSkillsView({ executors, searchText, sourceFilter, t, onSearch, onFilter, onBack, onOpen, onInstall, onDelete }) {
+      const pending = executors.some(x => x.dirExists && !Array.isArray(x.skills))
+      if (pending) return h(Spinner, { label: t('loadingCatalogs') })
+      let items = []
+      for (const row of executors) {
+        if (!row.dirExists || !Array.isArray(row.skills)) continue
+        if (sourceFilter !== 'all' && row.key !== sourceFilter) continue
+        for (const s of row.skills) items.push({ row, s })
+      }
+      if (searchText) items = items.filter(it => matchSkill(it.s, searchText.toLowerCase()))
+      return [
+        h('div', { className: 'sk-head' },
+          h(P.Button, { variant: 'ghost', size: 'sm', onClick: onBack }, t('backCards')),
+          h('span', { className: 'sk-title' }, t('title')),
+          h(InputBox, { value: searchText, placeholder: t('searchAll'), onSearch }),
+          SourceFilterEl({ rows: executors.filter(r => r.dirExists), value: sourceFilter, onChange: onFilter, t }),
+          h('span', { className: 'spacer' }),
+          h(Tag, null, `${items.length} ${t('skillsSuffix')}`)),
+        !items.length
+          ? h(Empty, null, t('emptySearch'))
+          : h('div', { className: 'sk-grid' }, items.map(({ row, s }) =>
+              h(SkillCard, { key: row.key + '/' + s.name, row, s, t, onOpen, onInstall, onDelete })))]
+    }
+
+    function DrillInView({ row, searchText, t, onSearch, onBack, onOpen, onInstall, onDelete }) {
+      if (!row) return null
+      if (!row.dirExists) {
+        return [
+          h('div', { className: 'sk-head' },
+            h(P.Button, { variant: 'ghost', size: 'sm', onClick: onBack }, t('backAll'))),
+          h(Empty, null, `${row.label} — ${row.dir}`)]
+      }
+      if (!Array.isArray(row.skills)) {
+        return h(Spinner, { label: t('scanning', { label: row.label }) })
+      }
+      let skills = row.skills
+      if (searchText) skills = skills.filter(s => matchSkill(s, searchText.toLowerCase()))
+      return [
+        h('div', { className: 'sk-head' },
+          h(P.Button, { variant: 'ghost', size: 'sm', onClick: onBack }, t('backAll')),
+          h('span', { className: 'sk-title' }, row.label),
+          h('span', { className: 'sk-tag' }, `${skills.length} ${t('skillsSuffix')}`),
+          row.readOnly && h(Tag, { tone: 'danger' }, t('readOnlyTag')),
+          h(InputBox, { value: searchText, placeholder: t('filterWithin', { label: row.label }), onSearch }),
+          h('span', { className: 'spacer' }),
+          h('span', { className: 'sk-dir' }, row.dir)),
+        !skills.length
+          ? h(Empty, null, searchText ? t('emptySearch') : t('emptySkillsIn', { label: row.label }))
+          : h('div', { className: 'sk-grid' }, skills.map(s =>
+              h(SkillCard, { key: s.name, row, s, t, onOpen, onInstall, onDelete }))),
+      ]
+    }
+
+    function InputBox({ value, placeholder, onSearch }) {
+      if (prim('Input')) {
+        return h(P.Input, { value, placeholder, onChange: e => onSearch(e.target.value),
+          style: { minWidth: 220 } })
+      }
+      return h('input', { value, placeholder, onChange: e => onSearch(e.target.value),
+        style: { minWidth: 220, minHeight: 32, borderRadius: 8, border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-1)', color: 'var(--dsw-alias-label-primary)', padding: '6px 12px' } })
+    }
+    function SourceFilterEl(args) { return SourceFilter(args) }
+
+    // ── App root ─────────────────────────────────────────────────────────────
+
+    function SkillsPage({ t, onClose, embedded }) {
+      const [base, setBase] = useState({ sources: [], market: [], installed: [] })
+      const [executors, setExecutors] = useState([])
+      const [tab, setTab] = useState('executors')
+      const [executorView, setExecutorView] = useState('cards')
+      const [filterExecutor, setFilterExecutor] = useState('all')
+      const [sourceFilter, setSourceFilter] = useState('all')
+      const [marketFilter, setMarketFilter] = useState('all')
+      const [searchExec, setSearchExec] = useState('')
+      const [searchDrill, setSearchDrill] = useState('')
+      const [searchAll, setSearchAll] = useState('')
+      const [searchMarket, setSearchMarket] = useState('')
+      const [searchInstalled, setSearchInstalled] = useState('')
+      const [sel, setSel] = useState(null)
+      const [tick, forceTick] = useState(0)
+      const rootRef = useRef(null)
+
+      const reload = () => {
+        getJson(API).then(setBase).catch(() => {})
+        getJson(API + '/executors?mode=summary').then(d => setExecutors(d.executors || [])).catch(() => {})
+      }
+      useEffect(reload, [])
+
+      // Load full lists for one executor on demand
+      useEffect(() => {
+        if (filterExecutor === 'all') return
+        const row = executors.find(x => x.key === filterExecutor)
+        if (!row || Array.isArray(row.skills)) return
+        let alive = true
+        getJson(API + '/executors?executor=' + encodeURIComponent(filterExecutor))
+          .then(d => { if (alive) setExecutors(rows => rows.map(r => r.key === d.executor.key ? d.executor : r)) })
+          .catch(() => {})
+        return () => { alive = false }
+      }, [filterExecutor, executors])
+
+      // Load all catalogs when entering the flat all-skills view
+      useEffect(() => {
+        if (!(tab === 'executors' && executorView === 'all')) return
+        const targets = executors.filter(x => x.dirExists && !Array.isArray(x.skills))
+        targets.forEach(row => {
+          getJson(API + '/executors?executor=' + encodeURIComponent(row.key))
+            .then(d => setExecutors(rows => rows.map(r => r.key === d.executor.key ? d.executor : r)))
+            .catch(() => {})
+        })
+      }, [tab, executorView, executors])
+
+      const row = filterExecutor !== 'all' ? executors.find(x => x.key === filterExecutor) : null
+
+      const openDetail = (s, executorKey) => setSel({ name: s.name, executorKey })
+      const [pendingDelete, setPendingDelete] = useState(null)
+      const doPendingDelete = async () => {
+        if (!pendingDelete) return
+        await quickDelete(t, pendingDelete.executor, pendingDelete.name, afterChange)
+        setPendingDelete(null)
+        reload()
+      }
+
+      let body = null
+      if (tab === 'executors') {
+        if (filterExecutor !== 'all') {
+          body = h(DrillInView, { row, searchText: searchDrill, t,
+            onSearch: setSearchDrill,
+            onBack: () => { setFilterExecutor('all'); setSearchDrill('') },
+            onOpen: s => openDetail(s, row?.key),
+            onInstall: (r, name) => runInstall(t, { name, from: r.key }, afterChange),
+            onDelete: (r, name) => setPendingDelete({ executor: r.key, name }) })
+        } else if (executorView === 'all') {
+          body = h(AllSkillsView, { executors, searchText: searchAll, sourceFilter, t,
+            onSearch: setSearchAll,
+            onFilter: v => { setSourceFilter(v); if (v !== 'all') { setFilterExecutor(v); setSearchAll(''); setSearchExec('') } },
+            onBack: () => setExecutorView('cards'),
+            onOpen: s => { const owner = executors.find(x => x.dirExists && Array.isArray(x.skills) && x.skills.some(k => k.name === s.name)); openDetail(s, owner ? owner.key : sourceFilter !== 'all' ? sourceFilter : 'dsh') },
+            onInstall: (r, name) => runInstall(t, { name, from: r.key }, afterChange),
+            onDelete: (r, name) => setPendingDelete({ executor: r.key, name }) })
         } else {
-          filesHtml = '<div class="skills-section-title">Content</div><div class="skills-file-preview"><div class="skills-file-content skills-md-content">' + renderMarkdown(content) + '</div></div>'
+          body = h(CardsView, { executors, t,
+            onEnter: key => { setFilterExecutor(key); setSearchDrill('') },
+            onBrowseAll: () => setExecutorView('all') })
         }
+      } else if (tab === 'installed') {
+        const list = base.installed.filter(s => !searchInstalled ||
+          matchSkill({ name: s.name, description: s.description }, searchInstalled.toLowerCase()))
+        body = [
+          h('div', { className: 'sk-toolbar' },
+            h(InputBox, { value: searchInstalled, placeholder: t('searchAll'), onSearch: setSearchInstalled })),
+          list.length
+            ? h('div', { className: 'sk-list' }, list.map(s =>
+                h('div', { key: s.name, className: 'sk-card' },
+                  h('div', { style: { minWidth: 0 } },
+                    h('div', { className: 'sk-title' }, s.name),
+                    h('div', { className: 'sk-dir' }, `${s.fileCount} · ${formatSize(s.totalSize)} · ${formatTime(s.modifiedAt)}`)),
+                  h('div', { className: 'sk-rowbtns' },
+                    h(ButtonLite, { small: true, onClick: () => openDetail({ name: s.name }, 'dsh') }, t('detail')),
+                    h(ButtonLite, { danger: true, small: true, onClick: () => setPendingDelete({ executor: 'dsh', name: s.name }) }, t('deleteBtn'))))))
+            : h(Empty, null, t('emptySkillsIn', { label: t('tabInstalled') }))]
 
-        const actions = []
-        if (!exRow || exRow.key !== 'dsh') actions.push('<button class="skills-btn primary" id="sk-drawer-install">Install' + (exRow ? ' from ' + exRow.label : '') + '</button>')
-        if (exRow && exRow.key === 'dsh') actions.push('<span class="skills-tag ok">active in DSH</span>')
-        if (exRow && exRow.readOnly) actions.push('<span class="skills-tag readonly">read-only source</span>')
-        if (exRow && !exRow.readOnly) actions.push('<button class="skills-btn danger" onclick="window._skillsDelete(window.__skName, window.__skEx)">Delete</button>')
-        actions.push('<button class="skills-btn" onclick="window._skillsCopy()">Copy</button>')
-
-        d.innerHTML = '<div class="skills-drawer-header">' +
-          '<div class="skills-drawer-title">' + escapeHtml(skill?.shortName||skill?.name||'Skill Detail') + '</div>' +
-          '<button class="skills-drawer-close" onclick="window._skillsCloseDrawer()">x</button></div>' +
-          '<div class="skills-drawer-body">' +
-            '<div class="skills-alert">' + escapeHtml(meta.description || meta.whenToUse || 'No description') + '</div>' +
-            '<div class="skills-actions-bar">' + actions.join('') + '</div>' +
-            metaHtml + filesHtml +
-          '</div>'
-
-        window.__skName = skill?.name
-        window.__skEx = executorKey
-
-        const installBtn = d.querySelector('#sk-drawer-install')
-        if (installBtn) installBtn.onclick = () => {
-          if (executorKey) this._installFromExecutor(exRow, skill?.name)
-          else this._install(skill?.name)
-        }
-
-        d.querySelectorAll('.skills-file-item').forEach(item => {
-          item.onclick = () => {
-            d.querySelectorAll('.skills-file-item').forEach(f => f.classList.remove('selected'))
-            item.classList.add('selected')
-            this._loadFilePreview(item.dataset.path)
-          }
-        })
+      } else {
+        // market / sources share the market collection dataset
+        const marketList = base.market.filter(s =>
+          (!searchMarket || matchSkill(s, searchMarket.toLowerCase())) &&
+          (marketFilter === 'all' || s.source === marketFilter))
+        if (tab === 'sources') {
+          body = base.sources.length
+            ? h('div', { className: 'sk-src' }, base.sources.map(src =>
+                h('div', { key: src.source, className: 'sk-card', role: 'button', tabIndex: 0,
+                  onClick: () => { setTab('market'); setMarketFilter(src.source) } },
+                  h('span', { className: 'sk-title' }, src.displayName || src.source),
+                  h('span', { className: 'sk-count' }, src.skills))))
+            : h(Empty, null, t('emptySearch'))
+        } else {
+          body = [
+            h('div', { className: 'sk-toolbar' },
+              h(InputBox, { value: searchMarket, placeholder: t('searchAll'), onSearch: setSearchMarket }),
+              h(SourceFilterStatic, { sources: base.sources, value: marketFilter, onChange: setMarketFilter }),
+              h('span', { className: 'spacer' }),
+              h(Tag, null, `${marketList.length} ${t('skillsSuffix')}`)),
+            marketList.length
+              ? h('div', { className: 'sk-grid' }, marketList.map(s =>
+                  h(SkillCard, { key: s.name, row: { key: '@market', label: splitSource(s.source), readOnly: false }, s: { ...s, name: s.shortName || s.name, keywords: s.keywords, totalSize: s.totalSize }, t,
+                    onOpen: item => openDetail(item, null),
+                    onInstall: (_r, name) => runInstall(t, { name }, afterChange),
+                    onDelete: () => {} })))
+              : h(Empty, null, t('emptySearch')),
+          ]
       }
 
-      async _loadFilePreview(path) {
-        const p = this.root.querySelector('#sk-preview')
-        if (!p) return
-        p.innerHTML = '<div class="skills-loading"><div class="skills-spinner"></div></div>'
-        try {
-          const name = this.detailData?.name || this.selectedSkill?.name
-          const q = '?name=' + encodeURIComponent(name) + '&path=' + encodeURIComponent(path) + (this.selectedExecutor ? '&executor=' + encodeURIComponent(this.selectedExecutor) : '')
-          const r = await fetch(API + '/file' + q)
-          if (!r.ok) throw new Error('HTTP ' + r.status)
-          const content = await r.text()
-          const isMd = path.endsWith('.md')
-          p.innerHTML = '<div class="skills-file-content' + (isMd?' skills-md-content':'') + '">' + (isMd ? renderMarkdown(content) : escapeHtml(content)) + '</div>'
-        } catch (e) { p.innerHTML = '<div class="skills-file-content" style="color:#e5484d">Failed: ' + escapeHtml(e.message) + '</div>' }
-      }
-
-      _closeDrawer() { this.drawerOpen = false; this._renderDrawer() }
-
-      async _install(name) {
-        if (!confirm('Install ' + name + ' from market?')) return
-        try {
-          const r = await fetch(API + '/install', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name})})
-          if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.error||'Install failed') }
-          await this._loadData()
-        } catch (e) { alert('Install failed: ' + e.message) }
-      }
-
-      async _installFromExecutor(row, name) {
-        if (!row) return
-        if (!confirm('Copy "' + name + '" from ' + row.label + ' into the DSH skills library?\nThe skill becomes callable through the DSH skill tool.')) return
-        try {
-          const r = await fetch(API + '/install', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name, from: row.key})})
-          if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.error||'Install failed') }
-          await this._loadData()
-        } catch (e) { alert('Install failed: ' + e.message) }
-      }
-
-      async _delete(name, executor) {
-        const where = executor && executor !== 'dsh' ? ' from ' + executor : ''
-        if (!confirm('Delete ' + name + where + '?')) return
-        try {
-          const body = { name }
-          if (executor) body.executor = executor
-          const r = await fetch(API, {method:'DELETE', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
-          if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.error||'Delete failed') }
-          await this._loadData()
-        } catch (e) { alert('Delete failed: ' + e.message) }
+      return h('div', { className: 'sk-page' + (embedded ? '' : ' sk-overlay'), ref: rootRef },
+        !embedded && h('div', { className: 'sk-head' },
+          h('span', { className: 'sk-title', style: { fontSize: 16 } }, t('title')),
+          h('span', { className: 'spacer' }),
+          h(ButtonLite, { onClick: () => onClose && onClose() }, t('close'))),
+        h('div', { className: 'sk-tabs' }, ['executors', 'market', 'sources', 'installed'].map(key =>
+          h('button', { key, className: 'sk-tabpill' + (tab === key ? ' on' : ''), style: pillStyle(tab === key),
+            onClick: () => { setTab(key); setFilterExecutor('all'); setExecutorView('cards'); setSearchExec(''); setSearchDrill(''); setSearchAll('') } }, t('tab' + key[0].toUpperCase() + key.slice(1))))),
+        h('div', null, body),
+        sel && h(DetailModal, { sel, executors, t,
+          onClose: () => setSel(null), onInstalled: () => { setSel(null); reload() }, onDeleted: () => { setSel(null); reload() } }),
+        pendingDelete && P && P.Modal && h(P.Modal, {
+          open: true,
+          onClose: () => setPendingDelete(null),
+          title: t('deleteConfirm', {
+            name: pendingDelete.name,
+            where: pendingDelete.executor === 'dsh' || !pendingDelete.executor ? t('whereDsh') : ((executors.find(x => x.key === pendingDelete.executor) || {}).label || pendingDelete.executor),
+          }),
+          footer: h('div', { className: 'sk-toolbar', style: { justifyContent: 'flex-end' } },
+            h(ButtonLite, { onClick: () => setPendingDelete(null) }, t('close')),
+            h(ButtonLite, { primary: true, danger: true, onClick: doPendingDelete }, t('deleteBtn'))),
+        }, null))
       }
     }
 
-    // ── Client-plane module: slots integration ──
-    //
-    // The current dsh web app has no ctx.sidebar/ctx.settings services — sidebar
-    // footer buttons ("sidebar.footer.action") and settings sections
-    // ("settings.section") are SLOT entries whose payload is a React component
-    // plus a prop factory. Module exports `inject` (cordis services touched on
-    // ctx), otherwise the loader's inject guard rejects ctx.slots access.
-
-    function mountSkillsApp(onClosed) {
-      const mount = document.createElement('div')
-      document.body.appendChild(mount)
-      new SkillsApp(mount, { onClosed })
-      return mount
+    function SourceFilterStatic({ sources, value, onChange }) {
+      return h('select', { value, onChange: e => onChange(e.target.value),
+          style: selectStyle() },
+        h('option', { value: 'all' }, 'All Sources'),
+        sources.map(s => h('option', { key: s.source, value: s.source }, (s.displayName || s.source) + ` (${s.skills})`)))
+    }
+    function splitSource(source) { return source.split('/')[0] || source }
+    function selectStyle() {
+      return { minHeight: 30, borderRadius: 8, border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-specific-input-major, var(--dsw-alias-bg-layer-1))', color: 'var(--dsw-alias-label-primary)', padding: '4px 10px' }
+    }
+    function pillStyle(on) {
+      return {
+        padding: '6px 14px', borderRadius: 999, cursor: 'pointer', fontSize: 13.5, fontWeight: on ? 600 : 400,
+        border: '1px solid ' + (on ? 'var(--dsw-alias-brand-primary,var(--dsw-alias-state-business-primary))' : 'transparent'),
+        background: on ? 'var(--dsw-alias-bg-layer-2)' : 'transparent',
+        color: on ? 'var(--dsw-alias-label-primary)' : 'var(--dsw-alias-label-secondary)',
+      }
     }
 
-    /** Sidebar footer button → toggles the full-page overlay. */
-    function FooterActionEntry() {
-      const [open, setOpen] = React.useState(false)
-      React.useEffect(() => {
+    // install/delete REST helpers shared across views
+    async function runInstall(t, body, done) {
+      try {
+        const r = await fetch(API + '/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status)
+        done()
+      } catch (e) { alert(t('operationFailed') + ': ' + e.message) }
+    }
+    async function quickDelete(t, executor, name, done) {
+      try {
+        const body = { name }
+        if (executor) body.executor = executor
+        const r = await fetch(API, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status)
+        done()
+      } catch (e) { alert(t('operationFailed') + ': ' + e.message) }
+    }
+
+    // ── Slot entries ─────────────────────────────────────────────────────────
+
+    function footerStyle() {
+      return { display: 'inline-flex', alignItems: 'center', gap: 6, margin: '4px 10px', padding: '8px 10px',
+        border: 'none', borderRadius: 8, background: 'transparent', color: 'var(--dsw-alias-label-secondary)',
+        font: 'inherit', fontSize: 13, cursor: 'pointer', width: 'calc(100% - 20px)', textAlign: 'left' }
+    }
+
+    function FooterActionEntry(props) {
+      const [open, setOpen] = useState(false)
+      useEffect(() => {
         if (!open) return
-        const mountEl = mountSkillsApp(() => setOpen(false))
-        return () => { mountEl.remove() }
+        const mount = document.createElement('div')
+        mount.className = 'sk-overlay-host'
+        document.body.appendChild(mount)
+        const cleanupUser = () => {}
+        props.onMount && props.onMount(mount)
+        const root = require('react-dom/client').createRoot(mount)
+        root.render(h(WithLocale, null, h(SkillsPage, { onClose: () => setOpen(false) })))
+        return () => { root.unmount(); mount.remove() }
       }, [open])
       if (open) return null
-      return React.createElement('button', {
-        className: 'skills-footer-action',
-        title: 'Skills Market',
-        style: { display:'flex', alignItems:'center', gap:'6px', margin:'4px 10px', padding:'8px 10px',
-          border:'none', borderRadius:'8px', background:'transparent', color:'inherit',
-          fontSize:'13px', cursor:'pointer', width:'calc(100% - 20px)', textAlign:'left' },
-        onClick: () => setOpen(true),
-      }, '🎯 Skills Market')
+      return h('button', { title: 'Skills Market', 'aria-label': '🎯 Skills Market', onClick: () => setOpen(true),
+          style: footerStyle() }, '🎯 ', props.label || '')
     }
 
-    /** Settings section entry → mounts the same surface in place. */
     function SettingsSectionEntry() {
-      const [holder, setHolder] = React.useState(null)
-      React.useEffect(() => {
+      const [holder, setHolder] = useState(null)
+      useEffect(() => {
         if (!holder) return
-        const mount = document.createElement('div')
-        holder.appendChild(mount)
-        // In-place mode: closing from inside just empties this section.
-        new SkillsApp(mount)
-        return () => { mount.remove() }
+        const inner = document.createElement('div')
+        holder.appendChild(inner)
+        const root = require('react-dom/client').createRoot(inner)
+        root.render(h(WithLocale, null, h(SkillsPage, { embedded: true })))
+        return () => { root.unmount(); inner.remove() }
       }, [holder])
-      return React.createElement('div', { ref: setHolder, style: { minHeight: '70vh' } })
+      return h('div', { ref: setHolder, style: { minHeight: '60vh' } })
     }
 
-    const CLIENT_NAME = 'dsh-plugin-skills-management'
+    /** Binds the locale namespace and re-renders children on language change. */
+    function WithLocale({ children }) {
+      const [, tick] = useState(0)
+      useEffect(() => {
+        if (typeof globalThis.__localeSubscribe !== 'function') return
+        return globalThis.__localeSubscribe(() => tick(n => n + 1))
+      }, [])
+      return children
+    }
+
+    // ── Plugin plane contract ────────────────────────────────────────────────
+
+    const CLIENT_NAME = 'skills-management-client'
 
     module.exports = {
       name: CLIENT_NAME,
-      inject: ['slots'],
+      inject: ['slots', 'locale'],
+      __internals: { NS, ZH, EN, matchSkill, formatSize, formatTime },
       apply(ctx) {
+        ctx.effect(() => {
+          ctx.locale.register(NS, 'zh', ZH)
+          ctx.locale.register(NS, 'en', EN)
+        }, 'skills-management: locale dict')
+        const t = ctx.locale.bind(NS)
         ctx.effect(() => {
           ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
             name: 'sidebar.footer.action',
             id: CLIENT_NAME,
             order: 50,
-            inject: () => ({}),
-          }, FooterActionEntry))
+            inject: () => ({ t }),
+          }, function FooterSlot(apiProps) {
+            return h(FooterActionEntry, { t, label: apiProps?.t ? apiProps.t('title') : 'Skills Market' })
+          }))
         }, 'skills-management: sidebar footer action')
         ctx.effect(() => {
           ctx.slots.inject('settings.section', () => ctx.slots.register({
             name: 'settings.section',
             id: CLIENT_NAME,
             order: 90,
-            label: () => 'Skills Management',
+            locale: NS,
+            label: (apiT) => (apiT && apiT('title')) || 'Skills Management',
             inject: () => ({}),
-          }, SettingsSectionEntry))
+          }, function SettingsSectionSlot() {
+            return h(SettingsSectionEntry, null)
+          }))
         }, 'skills-management: settings section')
       },
     }
