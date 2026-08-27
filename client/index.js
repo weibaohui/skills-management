@@ -751,55 +751,39 @@ function footerStyle() {
     font: 'inherit', fontSize: 13, cursor: 'pointer', width: 'calc(100% - 20px)', textAlign: 'left' }
 }
 
-/** Singleton overlay controller: mounts once at apply(), toggles visibility.
- *  Slot entries re-render frequently (sidebar churn); keeping React state out
- *  of them avoids the overlay being torn down on every parent remount. */
-let __overlay = null
-
-function createSkOverlay(t) {
-  ensureStyles()
-  const mount = document.createElement('div')
-  mount.className = 'sk-overlay-host'
-  mount.style.display = 'none'
-  document.body.appendChild(mount)
-  const root = require('react-dom/client').createRoot(mount)
-  const api = {
-    _open: false,
-    show() { mount.style.display = ''; api._open = true },
-    hide() { mount.style.display = 'none'; api._open = false },
-  }
-  root.render(h(SkBoundary, null, h(WithLocale, null, h(SkillsPage, { t, onClose: api.hide }))))
-  return api
+/** Panel state lives OUTSIDE React: sidebar churn remounts slot entries,
+ *  and any state kept in them (the old bug) is torn down with them. */
+const panelStore = {
+  open: false,
+  listeners: new Set(),
+  set(v) { panelStore.open = v; for (const fn of panelStore.listeners) fn(v) },
+  subscribe(fn) { panelStore.listeners.add(fn); return () => panelStore.listeners.delete(fn) },
 }
 
-function FooterActionEntry(props) {
-  return h('button', { title: 'Skills Market',
-      onClick: () => globalThis.__skToggle && globalThis.__skToggle(),
-      style: footerStyle() }, '\u{1F3AF} ', props.label || '')
+/** Footer slot entry: the button, and — when open — the whole market page
+ *  through the host primitives Modal (portal + overlay handled by the host's
+ *  own React tree; no custom createRoot, which never commits here). */
+function FooterSlotComponent(props) {
+  const [open, setOpen] = useState(panelStore.open)
+  useEffect(() => panelStore.subscribe(setOpen), [])
+  const t = props.__t
+  return h('span', { style: { display: 'contents' } },
+    h('button', { title: 'Skills Market', onClick: () => panelStore.set(!panelStore.open),
+        style: footerStyle() }, '\u{1F3AF} ', props.label || (t ? t('title') : 'Skills Market')),
+    open && P && P.Modal && h(P.Modal, {
+        open: true,
+        onClose: () => panelStore.set(false),
+        title: t ? t('title') : 'Skills Market',
+        closeLabel: t ? t('close') : 'Close',
+        contentClassName: 'sk-modal-page',
+      },
+      h(SkBoundary, null, h(SkillsPage, { t, embedded: true, onClose: () => panelStore.set(false) }))))
 }
 
-function SettingsSectionEntry() {
-  const [holder, setHolder] = useState(null)
-  useEffect(() => {
-    if (!holder) return
-    ensureStyles()
-    const inner = document.createElement('div')
-    holder.appendChild(inner)
-    const root = require('react-dom/client').createRoot(inner)
-    root.render(h(SkBoundary, null, h(WithLocale, null, h(SkillsPage, { embedded: true }))))
-    return () => { root.unmount(); inner.remove() }
-  }, [holder])
-  return h('div', { ref: setHolder, style: { minHeight: '60vh' } })
-}
-
-/** Binds the locale namespace and re-renders children on language change. */
-function WithLocale({ children }) {
-  const [, tick] = useState(0)
-  useEffect(() => {
-    if (typeof globalThis.__localeSubscribe !== 'function') return
-    return globalThis.__localeSubscribe(() => tick(n => n + 1))
-  }, [])
-  return children
+/** Settings section slot entry: render the page directly in the host tree. */
+function SettingsSlotComponent(props) {
+  useEffect(ensureStyles, [])
+  return h(SkBoundary, null, h(SkillsPage, { t: props.__t, embedded: true }))
 }
 
 // ── Plugin plane contract ────────────────────────────────────────────────
@@ -848,10 +832,6 @@ module.exports = {
       }
     } catch (e) { try { console.error('[skills-management] locale init:', e) } catch {} }
     globalThis.__skillsAppliedCount = ((globalThis.__skillsAppliedCount || 0) + 1)
-    if (typeof document !== 'undefined' && !__overlay) {
-      __overlay = createSkOverlay(t)
-      globalThis.__skToggle = () => (__overlay._open ? __overlay.hide() : __overlay.show())
-    }
     ctx.effect(() => {
       try {
       ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
@@ -860,7 +840,7 @@ module.exports = {
         order: 50,
         inject: () => ({ t }),
       }, function FooterSlot(apiProps) {
-        return h(FooterActionEntry, { t, label: apiProps?.t ? apiProps.t('title') : t('title') })
+        return h(FooterSlotComponent, { __t: t, label: apiProps?.t ? apiProps.t('title') : undefined })
       }))
       } catch (e) { (globalThis.__skErrors = globalThis.__skErrors || []).push('footer:' + (e && e.message)); throw e }
     }, 'skills-management: sidebar footer action')
@@ -874,7 +854,7 @@ module.exports = {
         label: (apiT) => (apiT && apiT('title')) || 'Skills Management',
         inject: () => ({}),
       }, function SettingsSectionSlot() {
-        return h(SettingsSectionEntry, null)
+        return h(SettingsSlotComponent, { __t: t })
       }))
       } catch (e) { (globalThis.__skErrors = globalThis.__skErrors || []).push('settings:' + (e && e.message)); throw e }
     }, 'skills-management: settings section')
