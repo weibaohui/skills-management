@@ -169,8 +169,11 @@ window.__ModuleLoader__.load({
     </style>`
 
     class SkillsApp {
-      constructor(root) {
+      constructor(root, opts = {}) {
         this.root = root
+        // Host shells (footer button / settings section) get notified on close so
+        // they can unmount their wrapper; otherwise the page removes itself.
+        this.onClosed = typeof opts.onClosed === 'function' ? opts.onClosed : undefined
         this.data = { sources:[], market:[], installed:[] }
         this.executors = []
         this.filterExecutor = 'all'
@@ -196,7 +199,12 @@ window.__ModuleLoader__.load({
         window._skillsCloseDrawer = () => this._closeDrawer()
         window._skillsCopy = () => navigator.clipboard.writeText(this.detailData?.content || '')
         window._skillsRefresh = () => this._loadData()
-        window._skillsClosePage = () => this.root.remove()
+      }
+
+      /** Close path shared by header ✕; delegates to the shell when embedded. */
+      _closePage() {
+        if (this.onClosed !== undefined) { const cb = this.onClosed; this.onClosed = undefined; cb(); return }
+        this.root.remove()
       }
 
       _render() {
@@ -210,7 +218,7 @@ window.__ModuleLoader__.load({
             '<div class="skills-toolbar" id="sk-toolbar"></div><div id="sk-content"></div>' +
           '</div></div><div id="sk-drawer" class="skills-drawer"></div><div id="sk-backdrop" class="skills-backdrop"></div></div>'
         this.root.querySelectorAll('.skills-tab').forEach(t => t.onclick = () => this._switchTab(t.dataset.t))
-        this.root.querySelector('#sk-close').onclick = () => window._skillsClosePage()
+        this.root.querySelector('#sk-close').onclick = () => this._closePage()
         this.root.querySelector('#sk-backdrop').onclick = () => this._closeDrawer()
         this._renderToolbar()
         this._renderContent()
@@ -674,28 +682,77 @@ window.__ModuleLoader__.load({
       }
     }
 
+    // ── Client-plane module: slots integration ──
+    //
+    // The current dsh web app has no ctx.sidebar/ctx.settings services — sidebar
+    // footer buttons ("sidebar.footer.action") and settings sections
+    // ("settings.section") are SLOT entries whose payload is a React component
+    // plus a prop factory. Module exports `inject` (cordis services touched on
+    // ctx), otherwise the loader's inject guard rejects ctx.slots access.
+
+    function mountSkillsApp(onClosed) {
+      const mount = document.createElement('div')
+      document.body.appendChild(mount)
+      new SkillsApp(mount, { onClosed })
+      return mount
+    }
+
+    /** Sidebar footer button → toggles the full-page overlay. */
+    function FooterActionEntry() {
+      const [open, setOpen] = React.useState(false)
+      React.useEffect(() => {
+        if (!open) return
+        const mountEl = mountSkillsApp(() => setOpen(false))
+        return () => { mountEl.remove() }
+      }, [open])
+      if (open) return null
+      return React.createElement('button', {
+        className: 'skills-footer-action',
+        title: 'Skills Market',
+        style: { display:'flex', alignItems:'center', gap:'6px', margin:'4px 10px', padding:'8px 10px',
+          border:'none', borderRadius:'8px', background:'transparent', color:'inherit',
+          fontSize:'13px', cursor:'pointer', width:'calc(100% - 20px)', textAlign:'left' },
+        onClick: () => setOpen(true),
+      }, '🎯 Skills Market')
+    }
+
+    /** Settings section entry → mounts the same surface in place. */
+    function SettingsSectionEntry() {
+      const [holder, setHolder] = React.useState(null)
+      React.useEffect(() => {
+        if (!holder) return
+        const mount = document.createElement('div')
+        holder.appendChild(mount)
+        // In-place mode: closing from inside just empties this section.
+        new SkillsApp(mount)
+        return () => { mount.remove() }
+      }, [holder])
+      return React.createElement('div', { ref: setHolder, style: { minHeight: '70vh' } })
+    }
+
+    const CLIENT_NAME = 'dsh-plugin-skills-management'
+
     module.exports = {
-      apply(ctx, config = {}) {
+      name: CLIENT_NAME,
+      inject: ['slots'],
+      apply(ctx) {
         ctx.effect(() => {
-          ctx.sidebar.footer.action({
-            id: 'skills-management',
-            label: 'Skills Market',
-            icon: '🎯',
-            async onClick() {
-              const c = document.createElement('div')
-              document.body.appendChild(c)
-              window._skillsClosePage = () => { c.remove() }
-              new SkillsApp(c)
-            },
-          })
-        }, 'skills: sidebar')
+          ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
+            name: 'sidebar.footer.action',
+            id: CLIENT_NAME,
+            order: 50,
+            inject: () => ({}),
+          }, FooterActionEntry))
+        }, 'skills-management: sidebar footer action')
         ctx.effect(() => {
-          ctx.settings.section({
-            id: 'skills-management',
-            label: 'Skills Management',
-            async mount(el) { new SkillsApp(el) },
-          })
-        }, 'skills: settings')
+          ctx.slots.inject('settings.section', () => ctx.slots.register({
+            name: 'settings.section',
+            id: CLIENT_NAME,
+            order: 90,
+            label: () => 'Skills Management',
+            inject: () => ({}),
+          }, SettingsSectionEntry))
+        }, 'skills-management: settings section')
       },
     }
 
