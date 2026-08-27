@@ -425,19 +425,19 @@ window.__ModuleLoader__.load({
 
     /** Tiny variant buttons before P.Button availability resolution settles —
      *  unified through primitives in the browser via data-p-* swap below. */
-    function ButtonLite({ primary, danger, small, children, onClick }) {
+    function ButtonLite({ primary, danger, small, children, ...rest }) {
       const cls = 'sk-btn' + (primary ? ' sk-btn-primary' : '') + (small ? ' sk-btn-sm' : '')
       if (prim('Button')) {
         return h(P.Button, {
           variant: primary ? 'primary' : 'outline',
           size: small ? 'sm' : 'md',
           className: cls,
-          onClick,
+          ...rest,
         }, children)
       }
       return h('button', {
-        onClick,
         className: cls,
+        ...rest,
       }, children)
     }
 
@@ -930,7 +930,7 @@ window.__ModuleLoader__.load({
               h('span', { className: 'spacer' }),
               h(ButtonLite, { primary: true, onClick: () => setMarketView('all') }, `${t('browseAllMarket')} (${allMarket.length})`),
               h('span', { style: { width: 6 } }),
-              h(ButtonLite, { onClick: () => setMarketSettingsOpen(true), title: t('marketSettings') }, '\u2699')),
+              h(ButtonLite, { onClick: () => setMarketSettingsOpen(true), title: t('marketSettings') }, '\u2699 ', t('marketSettings'))),
             base.sources.length
               ? h('div', { className: 'sk-src' }, base.sources.map(src =>
                   h('div', { key: src.source, className: 'sk-card', role: 'button', tabIndex: 0,
