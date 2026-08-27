@@ -3,40 +3,73 @@
 /**
  * dsh-plugin-skills-management — Host half
  *
- * ntd skill marketplace for dsh: reads the ntd bundled skill collection
- * (`~/.ntd/bundled/skills` by default — a directory tree of GitHub skill
- * repos, one skill per directory holding a SKILL.md), serves it plus the
- * user's installed
- * library over an HTTP API under `/skills-management/api`, and registers a
- * `ctx.skills` provider so every listed skill is callable through the dsh
- * `skill` tool. Install copies a market skill directory into the user
- * library; delete removes it. The market tree is read-only.
- *
- * Zero `@deepseek-ai/dsh-*` imports: harness capabilities are reached
- * through `ctx.*` runtime services (`skills`, `webServer`). Runtime
- * dependencies are plain npm packages (yaml).
+ * Two skill universes, one API:
+ * - Market: ntd-style bundled collections (git checkouts of GitHub skill
+ *   repos). Read-only, install copies into the user library.
+ * - Executors: every coding agent's on-machine skills directory
+ *   (`~/.claude/skills`, `~/.agents/skills`, …), following the ntd source
+ *   table. Scanned for display/detail; deletable per source unless marked
+ *   read-only (`agents`); any executor skill can be copied into the dsh
+ *   user library so the `skill` tool can call it.
  */
 
 const { createReadStream } = require('node:fs')
-const fs = require('node:fs/promises')
-const { basename, dirname, join, relative, resolve, sep } = require('node:path')
+const fsP = require('node:fs/promises')
+const { basename, join, relative, resolve, sep } = require('node:path')
 const { homedir } = require('node:os')
 const YAML = require('yaml')
 
-/** Default market roots: the ntd bundled collection checked out on disk. */
 const DEFAULT_MARKET_DIRS = [join(homedir(), '.ntd', 'bundled', 'skills')]
-
-/** Subdirectories never descended into while scanning a market root. */
 const MARKET_SCAN_SKIP = new Set(['.git', 'node_modules'])
-
-/** Registry rank: installed skills shadow same-named market skills. */
 const RANK_INSTALLED = 100
 const RANK_MARKET = 500
-
-/** Maximum request body the API accepts (install/delete payloads). */
 const MAX_BODY_BYTES = 64 * 1024
+const DESCRIPTION_LIMIT = 140
 
-/** Extract YAML frontmatter: `---` must open and close on its own line. */
+/**
+ * Known on-machine skill sources (executor → skills dir), ported from ntd's
+ * `ALL_SKILL_SOURCES` table plus this machine's ZCode CLI. `sub` is relative
+ * to $HOME; `dsh` is special — its root is the plugin's installedDir.
+ */
+const EXECUTOR_DEFS = [
+  { key: 'dsh', label: 'DSH' },
+  { key: 'claudecode', label: 'Claude Code', sub: '.claude/skills' },
+  { key: 'zcode', label: 'ZCode', sub: '.zcode/skills' },
+  { key: 'codex', label: 'Codex', sub: '.codex/skills' },
+  { key: 'opencode', label: 'OpenCode', sub: '.opencode/skills' },
+  { key: 'codebuddy', label: 'CodeBuddy', sub: '.codebuddy/skills' },
+  { key: 'atomcode', label: 'AtomCode', sub: '.atomcode/skills' },
+  { key: 'hermes', label: 'Hermes', sub: '.hermes/skills' },
+  { key: 'kimi', label: 'Kimi', sub: '.kimi/skills' },
+  { key: 'mobilecoder', label: 'MobileCoder', sub: '.mobile-coder/skills' },
+  { key: 'codewhale', label: 'Codewhale', sub: '.codewhale/skills' },
+  { key: 'kilo', label: 'Kilo', sub: '.kilo/skills' },
+  { key: 'pi', label: 'Pi', sub: '.pi/skills' },
+  { key: 'mimo', label: 'Mimo', sub: '.local/share/mimocode/skills' },
+  { key: 'zhanlu', label: 'ZhanLu', sub: '.local/share/zhanlu/skills' },
+  // agents is a read-only aggregation source in ntd semantics: visible,
+  // copyable out, but never deleted or overwritten from here.
+  { key: 'agents', label: 'Agents', sub: '.agents/skills', readOnly: true },
+]
+
+function isReadOnlySource(key) {
+  return key === 'agents'
+}
+
+/** Target directory name when installing a (possibly nested) skill name. */
+function installDirName(fullName) {
+  const parts = String(fullName === undefined || fullName === null ? '' : fullName).split('/')
+  return parts[parts.length - 1]
+}
+
+/** Absolute path with the $HOME prefix folded to `~` (no username leaks in UI). */
+function displayPath(p) {
+  const home = homedir()
+  if (p === home) return '~'
+  if (p.startsWith(home + sep)) return '~' + p.slice(home.length)
+  return p
+}
+
 function extractFrontmatter(content) {
   const lines = content.split(/\r?\n/)
   if (lines[0] === undefined || lines[0].trim() !== '---') return undefined
@@ -49,7 +82,6 @@ function extractFrontmatter(content) {
   return undefined
 }
 
-/** Parse one SKILL.md into `{ meta, body }`; frontmatter is optional. */
 function parseSkillMd(content) {
   const yamlText = extractFrontmatter(content)
   if (yamlText === undefined) return { meta: {}, body: content }
@@ -57,103 +89,81 @@ function parseSkillMd(content) {
   try {
     const parsed = YAML.parse(yamlText)
     if (parsed !== null && typeof parsed === 'object') meta = parsed
-  } catch {
-    // A malformed frontmatter block still leaves the body usable.
-  }
-  // The body is everything after the closing `---` line; recompute it from
-  // the line structure instead of string offsets so YAML content can never
-  // shift the split.
+  } catch {}
   const lines = content.split(/\r?\n/)
   let closer = -1
   for (let index = 1; index < lines.length; index += 1) {
-    if (lines[index].trim() === '---') {
-      closer = index
-      break
-    }
+    if (lines[index].trim() === '---') { closer = index; break }
   }
   const body = closer >= 0 ? lines.slice(closer + 1).join('\n').replace(/^\r?\n/, '') : content
   return { meta, body }
 }
 
-/**
- * One discovered skill directory. `root` is the scan root (market or user
- * library), `dir` the skill's own directory; `relPath` is `dir` relative to
- * `root` and doubles as the market skill's full name (ntd semantics: the
- * path segments carry the source repo).
- */
 function buildEntry(root, dir, stat) {
   return { root, dir, relPath: relative(root, dir).split(sep).join('/'), stat }
 }
 
-/** Recursively collect skill directories (dirs holding SKILL.md) under one root. */
-async function scanSkillDirs(root, current, out) {
+async function scanSkillDirs(root, current, out, visited) {
   let entries
-  try {
-    entries = await fs.readdir(current, { withFileTypes: true })
-  } catch {
-    return // unreadable directory: skip, not fail the scan
-  }
+  try { entries = await fsP.readdir(current, { withFileTypes: true }) }
+  catch { return }
   for (const entry of entries) {
-    if (!entry.isDirectory() || MARKET_SCAN_SKIP.has(entry.name)) continue
+    if (MARKET_SCAN_SKIP.has(entry.name)) continue
     const dir = join(current, entry.name)
-    const skillMd = join(dir, 'SKILL.md')
-    let hasSkillMd = false
-    let stat
-    try {
-      stat = await fs.stat(skillMd)
-      hasSkillMd = stat.isFile()
-    } catch {
-      hasSkillMd = false
-    }
-    if (hasSkillMd) {
-      out.push(buildEntry(root, dir, stat))
-    } else {
-      await scanSkillDirs(root, dir, out)
-    }
+    // Follow symlinks: executor skills dirs routinely symlink entries from a
+    // shared pool (~/.agents/skills); Dirent.isDirectory() would miss them.
+    let dirStat
+    try { dirStat = await fsP.stat(dir) } catch { continue }
+    if (!dirStat.isDirectory()) continue
+    let real
+    try { real = await fsP.realpath(dir) } catch { continue }
+    if (visited.has(real)) continue // symlink cycle guard
+    visited.add(real)
+    let hasSkillMd = false, skillMdStat
+    try { skillMdStat = await fsP.stat(join(dir, 'SKILL.md')); hasSkillMd = skillMdStat.isFile() } catch { hasSkillMd = false }
+    if (hasSkillMd) { out.push(buildEntry(root, dir, skillMdStat)) }
+    else { await scanSkillDirs(root, dir, out, visited) }
   }
 }
 
-/** List every skill directory under one root (empty when the root is absent). */
 async function scanRoot(root) {
   const out = []
-  try {
-    await fs.access(root)
-  } catch {
-    return out
-  }
-  await scanSkillDirs(root, root, out)
+  let real
+  try { await fsP.access(root) } catch { return out }
+  try { real = await fsP.realpath(root) } catch { return out }
+  await scanSkillDirs(root, root, out, new Set([real]))
   return out
 }
 
-/** Read and parse one skill directory's SKILL.md into a market/summary row. */
 async function readSkillEntry(entry) {
-  const content = await fs.readFile(join(entry.dir, 'SKILL.md'), 'utf8')
+  const content = await fsP.readFile(join(entry.dir, 'SKILL.md'), 'utf8')
   const { meta, body } = parseSkillMd(content)
   const name = typeof meta.name === 'string' && meta.name !== '' ? meta.name : basename(entry.dir)
-  const description = typeof meta.description === 'string' ? meta.description : ''
   return {
     entry,
     name,
-    description,
-    meta,
-    body,
+    description: typeof meta.description === 'string' ? meta.description : '',
+    keywords: Array.isArray(meta.keywords) ? meta.keywords : [],
+    version: typeof meta.version === 'string' ? meta.version : undefined,
+    author: typeof meta.author === 'string' ? meta.author : undefined,
+    license: typeof meta.license === 'string' ? meta.license : undefined,
+    meta, body,
     modifiedAt: entry.stat !== undefined ? entry.stat.mtime.toISOString() : undefined,
   }
 }
 
-/** Count files and total bytes under one skill directory. */
 async function countFilesAndSize(dir) {
-  let fileCount = 0
-  let totalSize = 0
+  let fileCount = 0, totalSize = 0
   const walk = async (current) => {
-    const entries = await fs.readdir(current, { withFileTypes: true })
+    const entries = await fsP.readdir(current, { withFileTypes: true })
     for (const entry of entries) {
-      const path = join(current, entry.name)
-      if (entry.isDirectory()) {
-        await walk(path)
-      } else if (entry.isFile()) {
+      const entryPath = join(current, entry.name)
+      // stat follows symlinks so linked files/dirs count toward the skill
+      let stat = await fsP.stat(entryPath).catch(() => undefined)
+      if (stat === undefined) continue
+      if (stat.isDirectory()) { await walk(entryPath) }
+      else if (stat.isFile()) {
         fileCount += 1
-        const stat = await fs.stat(path)
         totalSize += stat.size
       }
     }
@@ -162,48 +172,57 @@ async function countFilesAndSize(dir) {
   return { fileCount, totalSize }
 }
 
-/** Recursively copy one directory tree. */
 async function copyDir(from, to) {
-  await fs.mkdir(to, { recursive: true })
-  const entries = await fs.readdir(from, { withFileTypes: true })
+  await fsP.mkdir(to, { recursive: true })
+  const entries = await fsP.readdir(from, { withFileTypes: true })
   for (const entry of entries) {
     if (entry.name === '.git') continue
-    const source = join(from, entry.name)
-    const target = join(to, entry.name)
-    if (entry.isDirectory()) {
-      await copyDir(source, target)
-    } else if (entry.isFile()) {
-      await fs.copyFile(source, target)
-    }
+    const source = join(from, entry.name), target = join(to, entry.name)
+    // Follow symlinks and materialize their targets: installs must be
+    // self-contained (a linked references/ dir cannot dangle later).
+    let stat
+    try { stat = await fsP.stat(source) } catch { continue }
+    if (stat.isDirectory()) { await copyDir(source, target) }
+    else if (stat.isFile()) { await fsP.copyFile(source, target) }
   }
 }
 
-/** Resolve a skill by full name (`source/…/short`) within one root, refusing escapes. */
 async function resolveSkillDir(root, fullName) {
   if (fullName === '' || fullName.includes('..') || fullName.includes('\\') || fullName.startsWith('/')) {
     throw new Error('invalid skill name')
   }
   const dir = resolve(root, fullName)
-  if (!dir.startsWith(resolve(root) + sep)) throw new Error('invalid skill name')
-  try {
-    const stat = await fs.stat(join(dir, 'SKILL.md'))
-    if (!stat.isFile()) throw new Error('not a skill directory')
-    return dir
-  } catch {
-    throw new Error(`skill '${fullName}' not found`)
+  if (!dir.startsWith(resolve(root) + sep)) throw new Error('invalid skill name: escapes root')
+  let stat
+  try { stat = await fsP.stat(join(dir, 'SKILL.md')) }
+  catch (e) {
+    if (e.code === 'ENOENT' || e.code === 'ENOTDIR') throw new Error(`skill '${fullName}' not found`)
+    throw e
+  }
+  if (!stat.isFile()) throw new Error('not a skill directory')
+  return dir
+}
+
+// ── Shared route helpers ────────────────────────────────────────────────
+
+function validSkillName(name) {
+  return typeof name === 'string' && name !== '' && !name.includes('..') && !name.includes('\\') && !name.startsWith('/')
+}
+
+/** Resolve `<root>/<name>` to an existing skill dir under one source root. */
+async function findDirUnderRoot(root, fullName, where) {
+  try { return await resolveSkillDir(root, fullName) }
+  catch (e) {
+    if (String(e && e.message).includes('not found')) throw new Error(`skill '${fullName}' not found in ${where}`)
+    throw e
   }
 }
 
-/**
- * Stream one file from a skill directory as an HTTP response. The path is
- * canonicalized and prefix-checked against the skill dir (ntd's
- * `get_skill_file` traversal guard, kept verbatim in spirit).
- */
 async function sendSkillFile(res, skillDir, relPath, contentType) {
   const target = resolve(skillDir, relPath)
   const skillRoot = resolve(skillDir)
-  if (!target.startsWith(skillRoot + sep)) throw new Error('invalid file path: escapes skill directory')
-  const stat = await fs.stat(target)
+  if (!target.startsWith(skillRoot + sep)) throw new Error('invalid file path')
+  const stat = await fsP.stat(target)
   if (!stat.isFile()) throw new Error('file not found')
   res.writeHead(200, {
     'content-type': contentType !== undefined && contentType !== '' ? contentType : 'application/octet-stream',
@@ -218,39 +237,41 @@ async function sendSkillFile(res, skillDir, relPath, contentType) {
   })
 }
 
-/** Read and answer one JSON request body, bounded by MAX_BODY_BYTES. */
+async function walkFiles(base, current, files = []) {
+  const entries = await fsP.readdir(current, { withFileTypes: true })
+  for (const entry of entries) {
+    const entryPath = join(current, entry.name)
+    let stat = await fsP.stat(entryPath).catch(() => undefined) // follows symlinks
+    if (stat === undefined) continue
+    if (stat.isDirectory()) { await walkFiles(base, entryPath, files) }
+    else if (stat.isFile()) {
+      files.push({ path: relative(base, entryPath).split(sep).join('/'), size: stat.size, modifiedAt: stat.mtime.toISOString() })
+    }
+  }
+  return files
+}
+
 function readJsonBody(req) {
   return new Promise((fulfil, reject) => {
-    let size = 0
-    const chunks = []
+    let size = 0, chunks = []
     req.on('data', (chunk) => {
       size += chunk.length
-      if (size > MAX_BODY_BYTES) {
-        reject(new Error('request body too large'))
-        req.destroy()
-        return
-      }
+      if (size > MAX_BODY_BYTES) { reject(new Error('request body too large')); req.destroy(); return }
       chunks.push(chunk)
     })
     req.on('end', () => {
-      try {
-        fulfil(chunks.length === 0 ? {} : JSON.parse(Buffer.concat(chunks).toString('utf8')))
-      } catch (error) {
-        reject(new Error(`invalid JSON body: ${String((error && error.message) || error)}`))
-      }
+      try { fulfil(chunks.length === 0 ? {} : JSON.parse(Buffer.concat(chunks).toString('utf8'))) }
+      catch (error) { reject(new Error(`invalid JSON body: ${error && error.message}`)) }
     })
     req.on('error', reject)
   })
 }
 
-/** Send one JSON response. */
 function sendJson(res, status, payload) {
-  const text = JSON.stringify(payload)
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
-  res.end(text)
+  res.end(JSON.stringify(payload))
 }
 
-/** Resolve one frontmatter flag to a boolean; unrecognized values are absent. */
 function flagValue(meta, key) {
   const value = meta[key]
   if (typeof value === 'boolean') return value
@@ -262,147 +283,197 @@ function flagValue(meta, key) {
   return undefined
 }
 
-/**
- * Invocation policy from frontmatter: `disable-model-invocation` and
- * `user-invocable` both default to permitting their surface.
- */
 function invocationPolicy(meta) {
-  return {
-    modelInvocable: flagValue(meta, 'disable-model-invocation') !== true,
-    userInvocable: flagValue(meta, 'user-invocable') !== false,
-  }
+  return { modelInvocable: flagValue(meta, 'disable-model-invocation') !== true, userInvocable: flagValue(meta, 'user-invocable') !== false }
 }
 
-/** Cap for descriptions in list responses; the detail endpoint serves full text. */
-const DESCRIPTION_LIMIT = 140
-
-/** One-line clamp for a list-view description. */
 function truncateDescription(text) {
   if (typeof text !== 'string') return ''
   const single = text.split(/\r?\n/)[0]
-  return single.length > DESCRIPTION_LIMIT ? `${single.slice(0, DESCRIPTION_LIMIT)}…` : single
+  return single.length > DESCRIPTION_LIMIT ? single.slice(0, DESCRIPTION_LIMIT) + '…' : single
 }
 
-/** Directory name for an installed skill: the last path segment of its full name. */
-function installDirName(fullName) {
-  return basename(fullName)
+function expandTilde(p) {
+  return p === '~' || p.startsWith('~/') || p.startsWith('~\\') ? join(homedir(), p.slice(2)) : p
+}
+
+function contentTypeFor(p) {
+  const ext = p.slice(p.lastIndexOf('.') + 1).toLowerCase()
+  const map = { md: 'text/markdown; charset=utf-8', txt: 'text/plain; charset=utf-8', json: 'application/json; charset=utf-8', js: 'text/javascript', mjs: 'text/javascript', ts: 'text/typescript', tsx: 'text/typescript', css: 'text/css', html: 'text/html', svg: 'image/svg+xml', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', yaml: 'text/yaml', yml: 'text/yaml' }
+  return map[ext]
 }
 
 module.exports = {
   name: 'skills-management',
   inject: ['skills', 'webServer'],
-  /** Pure helpers exported for offline tests; not a runtime surface. */
-  __internals: { extractFrontmatter, parseSkillMd, invocationPolicy, installDirName },
+  __internals: { extractFrontmatter, parseSkillMd, invocationPolicy, installDirName, isReadOnlySource, EXECUTOR_DEFS },
 
-  /**
-   * Mount the marketplace provider and the HTTP API.
-   * @param ctx - harness context carrying `skills` and `webServer`.
-   * @param config - plugin config (`marketDirs`, `installedDir`, `providerName`).
-   */
   apply(ctx, config = {}) {
-    const marketDirs = (config.marketDirs !== undefined ? config.marketDirs : DEFAULT_MARKET_DIRS)
-      .map((dir) => resolve(expandTilde(dir)))
-    const installedDir = resolve(expandTilde(
-      config.installedDir !== undefined ? config.installedDir : process.env.DSH_HOME
-        ? join(process.env.DSH_HOME, 'skills')
-        : join(homedir(), '.dsh', 'skills')))
+    const marketDirs = (config.marketDirs !== undefined ? config.marketDirs : DEFAULT_MARKET_DIRS).map((d) => resolve(expandTilde(d)))
+    const installedDir = resolve(expandTilde(config.installedDir !== undefined ? config.installedDir : process.env.DSH_HOME ? join(process.env.DSH_HOME, 'skills') : join(homedir(), '.dsh', 'skills')))
     const providerName = config.providerName !== undefined ? config.providerName : 'ntd-skills'
 
-    /** Expand a leading `~` against the OS home directory. */
-    function expandTilde(path) {
-      return path === '~' || path.startsWith('~/') || path.startsWith('~\\')
-        ? join(homedir(), path.slice(2))
-        : path
+    // ── Executor (on-machine source) rows ──
+    // dsh first (its root is installedDir); then known defs minus disabled;
+    // then user extras. `executorDirs` overrides per-key roots, which also
+    // makes scans testable without touching the real $HOME.
+    const executorDirsOverride = config.executorDirs !== undefined && config.executorDirs !== null && typeof config.executorDirs === 'object' ? config.executorDirs : {}
+    const disabledExecutors = new Set(Array.isArray(config.disabledExecutors) ? config.disabledExecutors : [])
+    const seenKeys = new Set()
+    const executorRows = []
+    for (const def of EXECUTOR_DEFS) {
+      if (disabledExecutors.has(def.key)) continue
+      let root
+      if (def.key === 'dsh') root = installedDir
+      else if (executorDirsOverride[def.key] !== undefined) root = resolve(expandTilde(String(executorDirsOverride[def.key])))
+      else root = def.sub !== undefined ? join(homedir(), ...def.sub.split('/')) : undefined
+      if (seenKeys.has(def.key)) continue
+      seenKeys.add(def.key)
+      executorRows.push({ key: def.key, label: def.label, root, readOnly: def.readOnly === true })
+    }
+    for (const extra of Array.isArray(config.extraExecutors) ? config.extraExecutors : []) {
+      if (extra === null || typeof extra !== 'object') continue
+      if (typeof extra.key !== 'string' || extra.key === '') continue
+      if (typeof extra.dir !== 'string' || extra.dir === '') continue
+      if (seenKeys.has(extra.key)) continue
+      seenKeys.add(extra.key)
+      executorRows.push({
+        key: extra.key,
+        label: typeof extra.label === 'string' && extra.label !== '' ? extra.label : extra.key,
+        root: resolve(expandTilde(extra.dir)),
+        readOnly: extra.readOnly === true,
+      })
     }
 
-    /**
-     * Discover every skill in both libraries. Returns market rows keyed by
-     * full name and installed rows keyed by directory name.
-     */
     async function discoverAll() {
-      const market = []
+      const market = [], installed = []
       for (const root of marketDirs) {
         for (const entry of await scanRoot(root)) {
-          try {
-            market.push(await readSkillEntry(entry))
-          } catch (error) {
-            ctx.logger.warn(`skills-management: skipping unreadable skill at ${entry.dir}: ${String((error && error.message) || error)}`)
-          }
+          try { market.push(await readSkillEntry(entry)) }
+          catch (e) { ctx.logger.warn(`skills-management: skipping ${entry.dir}: ${e && e.message}`) }
         }
       }
-      const installed = []
       for (const entry of await scanRoot(installedDir)) {
-        try {
-          installed.push(await readSkillEntry(entry))
-        } catch (error) {
-          ctx.logger.warn(`skills-management: skipping unreadable skill at ${entry.dir}: ${String((error && error.message) || error)}`)
-        }
+        try { installed.push(await readSkillEntry(entry)) }
+        catch (e) { ctx.logger.warn(`skills-management: skipping ${entry.dir}: ${e && e.message}`) }
       }
       return { market, installed }
     }
 
-    /** Install one market skill into the user library by full name. */
-    async function installSkill(fullName, overwrite) {
-      let sourceDir
+    /**
+     * One executor row → summary + flat skill list (ntd `discover_skills_for`).
+     * With `countsOnly` the expensive per-skill dir walks are skipped and
+     * `skills` stays undefined — callers get `skillCount` only.
+     */
+    async function scanExecutor(row, countsOnly = false) {
+      const summary = { key: row.key, label: row.label, dir: displayPath(row.root), dirExists: false, readOnly: row.readOnly, skillCount: 0 }
+      if (!countsOnly) summary.skills = []
+      try { await fsP.access(row.root) } catch { return summary }
+      summary.dirExists = true
+      for (const entry of await scanRoot(row.root)) {
+        try {
+          const read = await readSkillEntry(entry)
+          // ntd naming: nested skill whose frontmatter name equals its dir
+          // basename keeps the category path as display name.
+          const listed = entry.relPath.includes('/') && read.name === basename(entry.dir) ? entry.relPath : read.name
+          summary.skillCount += 1
+          if (countsOnly) continue
+          const { fileCount, totalSize } = await countFilesAndSize(entry.dir)
+          summary.skills.push({ name: listed, relPath: entry.relPath, description: truncateDescription(read.description), keywords: read.keywords, version: read.version, author: read.author, fileCount, totalSize, modifiedAt: read.modifiedAt })
+        } catch (e) { ctx.logger.warn(`skills-management: skipping ${entry.dir}: ${e && e.message}`) }
+      }
+      if (summary.skills !== undefined) {
+        summary.skills.sort((a, b) => {
+          const la = a.name.toLowerCase(), lb = b.name.toLowerCase()
+          return la < lb ? -1 : la > lb ? 1 : 0
+        })
+      }
+      return summary
+    }
+
+    function findExecutorRow(key) {
+      return executorRows.find((row) => row.key === key)
+    }
+
+    /**
+     * Locate a named skill dir either scoped to one executor source or via
+     * the legacy auto path (installed library first, then markets).
+     * Returns `{ dir, executorKey|null, isInstalled }`.
+     */
+    async function locateNamedSkillDir(name, executorKey) {
+      if (executorKey !== undefined && executorKey !== null && executorKey !== '' && executorKey !== 'auto') {
+        const row = findExecutorRow(executorKey)
+        if (row === undefined) throw new Error(`unknown executor '${executorKey}'`)
+        const dir = await findDirUnderRoot(row.root, name, `${row.label} (${row.key})`)
+        return { dir, executorKey: row.key, isInstalled: row.key === 'dsh' }
+      }
+      try { return { dir: await resolveSkillDir(installedDir, name), executorKey: 'dsh', isInstalled: true } }
+      catch { /* fall through to market roots */ }
       for (const root of marketDirs) {
-        try {
-          sourceDir = await resolveSkillDir(root, fullName)
-          break
-        } catch (error) {
-          if (!String((error && error.message) || error).includes('not found')) throw error
-        }
+        try { return { dir: await resolveSkillDir(root, name), executorKey: null, isInstalled: false } }
+        catch (e) { if (!String(e && e.message).includes('not found')) throw e }
       }
-      if (sourceDir === undefined) throw new Error(`skill '${fullName}' not found in market`)
-      const target = join(installedDir, installDirName(fullName))
+      throw new Error(`skill '${name}' not found`)
+    }
+
+    /** Copy any source skill dir into the dsh user library and refresh. */
+    async function copyIntoLibrary(sourceDir, shortName, overwrite) {
+      const target = join(installedDir, shortName)
       if (!overwrite) {
-        try {
-          await fs.access(target)
-          throw new Error(`skill '${installDirName(fullName)}' already installed (pass overwrite to replace)`)
-        } catch (error) {
-          if (error.code !== 'ENOENT') throw error
-        }
-      } else {
-        await fs.rm(target, { recursive: true, force: true })
-      }
+        try { await fsP.access(target); throw new Error(`skill '${shortName}' already installed`) }
+        catch (e) { if (e.code !== 'ENOENT') throw e }
+      } else { await fsP.rm(target, { recursive: true, force: true }) }
       await copyDir(sourceDir, target)
       invalidate()
-      return { name: installDirName(fullName), path: target }
+      return { name: shortName, path: target }
     }
 
-    /** Remove one installed skill by its directory name. */
-    async function removeSkill(name) {
-      if (name === '' || name.includes('/') || name.includes('\\') || name.includes('..')) {
-        throw new Error('invalid skill name')
+    async function installMarketSkill(fullName, overwrite) {
+      let sourceDir
+      for (const root of marketDirs) {
+        try { sourceDir = await resolveSkillDir(root, fullName); break }
+        catch (e) { if (!String(e && e.message).includes('not found')) throw e }
       }
-      const target = join(installedDir, name)
-      const stat = await fs.stat(target).catch(() => undefined)
-      if (stat === undefined || !stat.isDirectory()) throw new Error(`installed skill '${name}' not found`)
-      await fs.rm(target, { recursive: true })
-      invalidate()
-      return { removed: name }
+      if (sourceDir === undefined) throw new Error(`skill '${fullName}' not found in market`)
+      return copyIntoLibrary(sourceDir, installDirName(fullName), overwrite)
     }
 
-    // ── provider: both libraries become one `ctx.skills` provider ───────────
-    let providerControl
-    const invalidate = () => {
-      if (providerControl !== undefined) providerControl.invalidate()
+    async function installFromExecutor(executorKey, fullName, overwrite) {
+      const row = findExecutorRow(executorKey)
+      if (row === undefined) throw new Error(`unknown executor '${executorKey}'`)
+      const sourceDir = await findDirUnderRoot(row.root, fullName, `${row.label} (${row.key})`)
+      return copyIntoLibrary(sourceDir, installDirName(fullName), overwrite)
     }
+
+    async function deleteSkill(name, executorKey) {
+      if (!validSkillName(name)) throw new Error('invalid skill name')
+      const key = executorKey === undefined || executorKey === null || executorKey === '' ? 'dsh' : executorKey
+      const row = findExecutorRow(key)
+      if (row === undefined) throw new Error(`unknown executor '${key}'`)
+      if (row.readOnly) throw new Error(`source '${key}' is read-only; cannot delete skills there`)
+      const target = join(row.root, name)
+      const stat = await fsP.stat(target).catch(() => undefined)
+      if (stat === undefined || !stat.isDirectory()) throw new Error(`skill '${name}' not found in ${row.label} (${row.key})`)
+      await fsP.rm(target, { recursive: true })
+      if (key === 'dsh') invalidate()
+      return { removed: name, executor: key }
+    }
+
+    let providerControl
+    const invalidate = () => { if (providerControl !== undefined) providerControl.invalidate() }
+
     ctx.skills.registerProvider((control) => {
       providerControl = control
-      control.signal.addEventListener('abort', () => {
-        if (providerControl === control) providerControl = undefined
-      }, { once: true })
+      control.signal.addEventListener('abort', () => { if (providerControl === control) providerControl = undefined }, { once: true })
       return {
         name: providerName,
         async list() {
           const { market, installed } = await discoverAll()
           const candidates = []
-          for (const row of installed) {
-            candidates.push(toCandidate(row, 'user-installed', RANK_INSTALLED))
-          }
+          for (const row of installed) { candidates.push(toCandidate(row, 'user-installed', RANK_INSTALLED)) }
           for (const row of market) {
-            // An installed skill shadows the market row with the same short name.
-            if (market.length > 0 && installed.some((entry) => entry.name === row.name)) continue
+            const shortName = row.name.includes('/') ? row.name.split('/').pop() : row.name
+            if (installed.some((e) => e.name === shortName)) continue
             candidates.push(toCandidate(row, 'market', RANK_MARKET))
           }
           return candidates
@@ -410,44 +481,17 @@ module.exports = {
         async get(candidate) {
           const entry = candidate.locator
           try {
-            return await readSkillEntry({ ...entry, stat: entry.stat ?? (await fs.stat(join(entry.dir, 'SKILL.md'))) })
-              .then((row) => ({
-                name: row.name,
-                description: row.description,
-                whenToUse: typeof row.meta.whenToUse === 'string' ? row.meta.whenToUse : undefined,
-                invocation: invocationPolicy(row.meta),
-                source: candidate.source,
-                provider: providerName,
-                resourceBase: { kind: 'directory', path: entry.dir },
-                content: row.body,
-                path: join(entry.dir, 'SKILL.md'),
-                metadata: row.meta,
-              }))
-          } catch {
-            return undefined // deleted or unreadable since discovery
-          }
+            const row = await readSkillEntry({ ...entry, stat: entry.stat ?? (await fsP.stat(join(entry.dir, 'SKILL.md'))) })
+            return { name: row.name, description: row.description, whenToUse: typeof row.meta.whenToUse === 'string' ? row.meta.whenToUse : undefined, invocation: invocationPolicy(row.meta), source: candidate.source, provider: providerName, resourceBase: { kind: 'directory', path: entry.dir }, content: row.body, path: join(entry.dir, 'SKILL.md'), metadata: row.meta }
+          } catch { return undefined }
         },
       }
     })
 
-    /** Shape one discovered row into a registry candidate. */
     function toCandidate(row, source, rank) {
-      return {
-        name: row.name,
-        description: row.description,
-        invocation: invocationPolicy(row.meta),
-        source,
-        provider: providerName,
-        rank,
-        locator: { dir: row.entry.dir, root: row.entry.root, relPath: row.entry.relPath, stat: row.entry.stat },
-        path: join(row.entry.dir, 'SKILL.md'),
-        metadata: row.meta,
-        whenToUse: typeof row.meta.whenToUse === 'string' ? row.meta.whenToUse : undefined,
-        resourceBase: { kind: 'directory', path: row.entry.dir },
-      }
+      return { name: row.name, description: row.description, invocation: invocationPolicy(row.meta), source, provider: providerName, rank, locator: { dir: row.entry.dir, root: row.entry.root, relPath: row.entry.relPath, stat: row.entry.stat }, path: join(row.entry.dir, 'SKILL.md'), metadata: row.meta, whenToUse: typeof row.meta.whenToUse === 'string' ? row.meta.whenToUse : undefined, resourceBase: { kind: 'directory', path: row.entry.dir } }
     }
 
-    // ── HTTP API under the registered prefix ─────────────────────────────────
     ctx.effect(() => ctx.webServer.register({
       kind: 'prefix',
       path: '/skills-management/api',
@@ -457,155 +501,85 @@ module.exports = {
           const apiPath = url.pathname.replace(/\/+$/, '')
           const query = url.searchParams
 
-          if (req.method === 'GET' && apiPath.endsWith('/skills-management/api')) {
+          // GET /skills-management/api/executors → on-machine sources.
+          // Variants: ?mode=summary (counts only, no skill arrays) and
+          // ?executor=<key> (one source, full list — lazy drill-in).
+          if (req.method === 'GET' && apiPath.endsWith('/skills-management/api/executors')) {
+            const scopeKey = query.get('executor')
+            if (scopeKey !== null && scopeKey !== '') {
+              const scoped = findExecutorRow(scopeKey)
+              if (scoped === undefined) throw new Error(`unknown executor '${scopeKey}'`)
+              sendJson(res, 200, { executor: await scanExecutor(scoped) })
+              return
+            }
+            const countsOnly = query.get('mode') === 'summary'
+            const executors = []
+            for (const row of executorRows) executors.push(await scanExecutor(row, countsOnly))
+            sendJson(res, 200, { executors })
+            return
+          }
+
+          // GET /skills-management/api → list
+          if (req.method === 'GET' && apiPath === '/skills-management/api') {
             const { market, installed } = await discoverAll()
             const sources = new Map()
             for (const row of market) {
-              const source = row.entry.relPath.split('/')[0]
-              const aggregate = sources.get(source) ?? { source, skills: 0, displayName: source }
-              aggregate.skills += 1
-              sources.set(source, aggregate)
+              const sourceKey = row.entry.relPath.split('/')[0]
+              const agg = sources.get(sourceKey) ?? { source: sourceKey, skills: 0, displayName: sourceKey }
+              agg.skills += 1
+              sources.set(sourceKey, agg)
             }
-            const installedNames = new Set(installed.map((row) => row.name))
-            // The list view truncates descriptions (full text lives on the
-            // detail endpoint): with 6000+ skills the untruncated payload
-            // reached 3MB and half of it was description bytes.
+            const installedNames = new Set(installed.map((r) => r.name))
             sendJson(res, 200, {
               sources: [...sources.values()],
-              market: market.map((row) => ({
-                name: row.entry.relPath,
-                shortName: row.name,
-                source: row.entry.relPath.split('/')[0],
-                description: truncateDescription(row.description),
-                installed: installedNames.has(row.name),
-              })),
-              installed: await Promise.all(installed.map(async (row) => {
-                const { fileCount, totalSize } = await countFilesAndSize(row.entry.dir)
-                return {
-                  name: row.name,
-                  description: truncateDescription(row.description),
-                  path: row.entry.dir,
-                  fileCount,
-                  totalSize,
-                  modifiedAt: row.modifiedAt,
-                }
-              })),
+              market: market.map((row) => ({ name: row.entry.relPath, shortName: row.name, source: row.entry.relPath.split('/')[0], description: truncateDescription(row.description), keywords: row.keywords, version: row.version, installed: installedNames.has(row.name), totalSize: 0 })),
+              installed: await Promise.all(installed.map(async (row) => { const { fileCount, totalSize } = await countFilesAndSize(row.entry.dir); return { name: row.name, description: truncateDescription(row.description), path: row.entry.dir, fileCount, totalSize, modifiedAt: row.modifiedAt } })),
             })
             return
           }
 
+          // GET /skills-management/api/detail?name=&executor= → detail
           if (req.method === 'GET' && apiPath.endsWith('/skills-management/api/detail')) {
             const name = query.get('name') || ''
-            let dir
-            try {
-              dir = await resolveSkillDir(installedDir, name)
-            } catch {
-              for (const root of marketDirs) {
-                try {
-                  dir = await resolveSkillDir(root, name)
-                  break
-                } catch (error) {
-                  if (!String((error && error.message) || error).includes('not found')) throw error
-                }
-              }
-            }
-            if (dir === undefined) {
-              sendJson(res, 404, { error: `skill '${name}' not found` })
-              return
-            }
-            const content = await fs.readFile(join(dir, 'SKILL.md'), 'utf8')
-            const files = []
-            const walk = async (base, current) => {
-              const entries = await fs.readdir(current, { withFileTypes: true })
-              for (const entry of entries) {
-                if (entry.isDirectory()) {
-                  await walk(base, join(current, entry.name))
-                } else if (entry.isFile()) {
-                  const stat = await fs.stat(join(current, entry.name))
-                  files.push({
-                    path: relative(base, join(current, entry.name)).split(sep).join('/'),
-                    size: stat.size,
-                    modifiedAt: stat.mtime.toISOString(),
-                  })
-                }
-              }
-            }
-            await walk(dir, dir)
-            sendJson(res, 200, { name, dir, content, files })
+            const located = await locateNamedSkillDir(name, query.get('executor'))
+            const content = await fsP.readFile(join(located.dir, 'SKILL.md'), 'utf8')
+            const files = await walkFiles(located.dir, located.dir)
+            const { fileCount, totalSize } = await countFilesAndSize(located.dir)
+            const { meta, body } = parseSkillMd(content)
+            sendJson(res, 200, { name, shortName: basename(name), dir: displayPath(located.dir), executor: located.executorKey, isInstalled: located.isInstalled, content: body, contentWithMeta: content, meta, files, fileCount, totalSize, modifiedAt: files[0]?.modifiedAt })
             return
           }
 
+          // GET /skills-management/api/file?name=&path=&executor= → file content
           if (req.method === 'GET' && apiPath.endsWith('/skills-management/api/file')) {
-            const name = query.get('name') || ''
-            const path = query.get('path') || ''
-            let dir
-            try {
-              dir = await resolveSkillDir(installedDir, name)
-            } catch {
-              for (const root of marketDirs) {
-                try {
-                  dir = await resolveSkillDir(root, name)
-                  break
-                } catch (error) {
-                  if (!String((error && error.message) || error).includes('not found')) throw error
-                }
-              }
-            }
-            if (dir === undefined) {
-              sendJson(res, 404, { error: `skill '${name}' not found` })
-              return
-            }
-            await sendSkillFile(res, dir, path, contentTypeFor(path))
+            const name = query.get('name') || '', filePath = query.get('path') || ''
+            const located = await locateNamedSkillDir(name, query.get('executor'))
+            await sendSkillFile(res, located.dir, filePath, contentTypeFor(filePath))
             return
           }
 
+          // POST /skills-management/api/install {name, from?, overwrite?}
           if (req.method === 'POST' && apiPath.endsWith('/skills-management/api/install')) {
             const body = await readJsonBody(req)
-            if (typeof body.name !== 'string' || body.name === '') {
-              sendJson(res, 400, { error: 'body must provide name' })
-              return
-            }
-            const result = await installSkill(body.name, body.overwrite === true)
-            sendJson(res, 201, { installed: result })
+            if (typeof body.name !== 'string' || body.name === '') { sendJson(res, 400, { error: 'body must provide name' }); return }
+            const result = typeof body.from === 'string' && body.from !== '' && body.from !== 'market'
+              ? await installFromExecutor(body.from, body.name, body.overwrite === true)
+              : await installMarketSkill(body.name, body.overwrite === true)
+            sendJson(res, 201, { installed: { ...result, from: typeof body.from === 'string' && body.from !== '' && body.from !== 'market' ? body.from : 'market' } })
             return
           }
 
+          // DELETE /skills-management/api {name, executor?} → remove
           if (req.method === 'DELETE' && apiPath.endsWith('/skills-management/api')) {
             const body = await readJsonBody(req)
-            if (typeof body.name !== 'string' || body.name === '') {
-              sendJson(res, 400, { error: 'body must provide name' })
-              return
-            }
-            sendJson(res, 200, await removeSkill(body.name))
+            if (typeof body.name !== 'string' || body.name === '') { sendJson(res, 400, { error: 'body must provide name' }); return }
+            sendJson(res, 200, await deleteSkill(body.name, typeof body.executor === 'string' ? body.executor : undefined))
             return
           }
 
           sendJson(res, 404, { error: 'not found' })
-        } catch (error) {
-          sendJson(res, 400, { error: String((error && error.message) || error) })
-        }
+        } catch (error) { sendJson(res, 400, { error: String(error && error.message || error) }) }
       },
     }), 'skills-management: api route')
-
-    /** Content-type guess for served skill files. */
-    function contentTypeFor(path) {
-      const extension = path.slice(path.lastIndexOf('.') + 1).toLowerCase()
-      const map = {
-        md: 'text/markdown; charset=utf-8',
-        txt: 'text/plain; charset=utf-8',
-        json: 'application/json; charset=utf-8',
-        js: 'text/javascript; charset=utf-8',
-        mjs: 'text/javascript; charset=utf-8',
-        css: 'text/css; charset=utf-8',
-        html: 'text/html; charset=utf-8',
-        svg: 'image/svg+xml',
-        png: 'image/png',
-        jpg: 'image/jpeg',
-        jpeg: 'image/jpeg',
-        gif: 'image/gif',
-        webp: 'image/webp',
-      }
-      return map[extension]
-    }
   },
 }
