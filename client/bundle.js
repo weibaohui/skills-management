@@ -80,6 +80,12 @@ window.__ModuleLoader__.load({
       tabSources: '来源',
       tabInstalled: '已安装',
       cardsHint: '选择一个执行器浏览它的技能，或一次查看全部',
+      marketCardsHint: '选择一个来源仓库浏览其技能，或一次查看全部',
+      backSources: '← 按来源',
+      backMarketCards: '← 来源卡片',
+      allMarketTitle: '全部市场技能',
+      browseAllMarket: '浏览全部市场技能',
+      showMore: '显示更多（剩余 {n}）',
       browseAll: '浏览全部技能',
       refresh: '刷新',
       backCards: '← 执行器卡片',
@@ -133,6 +139,12 @@ window.__ModuleLoader__.load({
       tabSources: 'Sources',
       tabInstalled: 'Installed',
       cardsHint: 'Pick an executor to browse its skills, or view everything at once',
+      marketCardsHint: 'Pick a source repo to browse its skills, or view everything at once',
+      backSources: '← By source',
+      backMarketCards: '← Source cards',
+      allMarketTitle: 'All Market Skills',
+      browseAllMarket: 'Browse all market skills',
+      showMore: 'Show more ({n} left)',
       browseAll: 'Browse all skills',
       refresh: 'Refresh',
       backCards: '← Executor cards',
@@ -338,7 +350,7 @@ window.__ModuleLoader__.load({
           h(Avatar, { name }),
           h('div', { style: { minWidth: 0 } },
             h('div', { className: 'sk-title' }, name),
-            h('div', { className: 'sk-dir' }, `${s.fileCount || 0} · ${formatSize(s.totalSize || 0)} · ${formatTime(s.modifiedAt)}`))),
+            (s.fileCount || s.totalSize) && h('div', { className: 'sk-dir' }, `${s.fileCount || 0} · ${formatSize(s.totalSize || 0)} · ${formatTime(s.modifiedAt)}`))),
         h('div', { className: 'sk-desc' }, s.description || ''),
         h('div', { className: 'sk-foot' },
           h('div', { className: 'sk-chips' },
@@ -347,7 +359,7 @@ window.__ModuleLoader__.load({
             s.version && h(Tag, { tone: 'accent' }, 'v' + s.version)),
           h('div', { className: 'sk-rowbtns' },
             row.key !== 'dsh' && h(ButtonLite, { primary: true, small: true,
-              onClick: e => { e.stopPropagation(); onInstall(row, s.name) } }, t('toDsh')),
+              onClick: e => { e.stopPropagation(); onInstall(row, s.installName || s.name) } }, t('toDsh')),
             (row.deletable !== false && !row.readOnly) && h(ButtonLite, { danger: true, small: true,
               onClick: e => { e.stopPropagation(); onDelete(row, s.name) } }, t('deleteBtn')))))
     }
@@ -496,6 +508,18 @@ window.__ModuleLoader__.load({
       return h('div', { className: 'sk-toast' }, text)
     }
 
+    /** Incremental grid: renders the first pageSize cards and grows on demand —
+     *  the market collection alone holds 6k+ skills and must not mount at once.
+     *  Key the element by the active filter so filtering resets the window. */
+    function PagedGrid({ items, render, t, pageSize = 120, grow = 240, keyPrefix = '' }) {
+      const [shown, setShown] = useState(pageSize)
+      return [
+        h('div', { className: 'sk-grid' }, items.slice(0, shown).map(render)),
+        items.length > shown && h('div', { style: { textAlign: 'center', margin: '14px 0' } },
+          h(ButtonLite, { onClick: () => setShown(n => n + grow) }, t('showMore', { n: items.length - shown }))),
+      ]
+    }
+
     // ── Views ────────────────────────────────────────────────────────────────
 
     function CardsView({ executors, t, onEnter, onBrowseAll }) {
@@ -567,8 +591,8 @@ window.__ModuleLoader__.load({
           h('span', { className: 'sk-dir' }, row.dir)),
         !skills.length
           ? h(Empty, null, searchText ? t('emptySearch') : t('emptySkillsIn', { label: row.label }))
-          : h('div', { className: 'sk-grid' }, skills.map(s =>
-              h(SkillCard, { key: s.name, row, s, t, onOpen, onInstall, onDelete }))),
+          : h(PagedGrid, { key: 'ed' + row.key + searchText, items: skills, t,
+              render: s => h(SkillCard, { key: s.name, row, s, t, onOpen, onInstall, onDelete }) }),
       ]
     }
 
@@ -591,11 +615,13 @@ window.__ModuleLoader__.load({
       const [executorView, setExecutorView] = useState('cards')
       const [filterExecutor, setFilterExecutor] = useState('all')
       const [sourceFilter, setSourceFilter] = useState('all')
-      const [marketFilter, setMarketFilter] = useState('all')
+      const [marketView, setMarketView] = useState('cards')
+      const [marketDrill, setMarketDrill] = useState(null)
+      const [searchMarketDrill, setSearchMarketDrill] = useState('')
+      const [searchMarketAll, setSearchMarketAll] = useState('')
       const [searchExec, setSearchExec] = useState('')
       const [searchDrill, setSearchDrill] = useState('')
       const [searchAll, setSearchAll] = useState('')
-      const [searchMarket, setSearchMarket] = useState('')
       const [searchInstalled, setSearchInstalled] = useState('')
       const [sel, setSel] = useState(null)
       const [tick, forceTick] = useState(0)
@@ -615,7 +641,7 @@ window.__ModuleLoader__.load({
       }
       useEffect(reloadExecutors, [])
       useEffect(() => {
-        if (['market', 'sources', 'installed'].includes(tab) && baseStale) reloadBase()
+        if (['market', 'installed'].includes(tab) && baseStale) reloadBase()
       }, [tab, baseStale])
 
       // Load full lists for one executor on demand
@@ -711,31 +737,59 @@ window.__ModuleLoader__.load({
             : h(Empty, null, t('emptySkillsIn', { label: t('tabInstalled') }))]
 
       } else {
-        // market / sources share the market collection dataset
-        const marketList = base.market.filter(s =>
-          (!searchMarket || matchSkill(s, searchMarket.toLowerCase())) &&
-          (marketFilter === 'all' || s.source === marketFilter))
-        if (tab === 'sources') {
-          body = base.sources.length
-            ? h('div', { className: 'sk-src' }, base.sources.map(src =>
-                h('div', { key: src.source, className: 'sk-card', role: 'button', tabIndex: 0,
-                  onClick: () => { setTab('market'); setMarketFilter(src.source) } },
-                  h('span', { className: 'sk-title' }, src.displayName || src.source),
-                  h('span', { className: 'sk-count' }, src.skills))))
-            : h(Empty, null, t('emptySearch'))
+        // Market tab mirrors the executors tab: source cards by default, a flat
+        // all-skills view on demand, and per-source drill-in with a scoped filter.
+        const allMarket = base.market || []
+        const lowerAll = searchMarketAll.toLowerCase()
+        const mkRow = (src) => ({ key: '@market', label: splitSource(src), readOnly: false, deletable: false })
+        if (marketDrill !== null) {
+          let sk = allMarket.filter(s => s.source === marketDrill)
+          const l = searchMarketDrill.toLowerCase()
+          if (l) sk = sk.filter(s => matchSkill({ ...s, name: s.shortName || s.name }, l))
+          body = [
+            h('div', { className: 'sk-head' },
+              h(ButtonLite, { onClick: () => { setMarketDrill(null); setSearchMarketDrill('') } }, t('backSources')),
+              h('span', { className: 'sk-title' }, marketDrill),
+              h('span', { className: 'sk-tag' }, `${sk.length} ${t('skillsSuffix')}`),
+              h(InputBox, { value: searchMarketDrill, placeholder: t('filterWithin', { label: marketDrill }), onSearch: setSearchMarketDrill })),
+            sk.length
+              ? h(PagedGrid, { key: 'md' + marketDrill + searchMarketDrill, items: sk, t,
+                  render: s => h(SkillCard, { key: s.name, row: mkRow(s.source), s: mkCard(s), t,
+                    onOpen: item => openDetail({ name: item.installName || item.name }, null),
+                    onInstall: (_r, name) => setPendingInstall({ row: null, name }),
+                    onDelete: () => {} }) })
+              : h(Empty, null, t('emptySearch')),
+          ]
+        } else if (marketView === 'all') {
+          const sk = lowerAll ? allMarket.filter(s => matchSkill({ ...s, name: s.shortName || s.name }, lowerAll)) : allMarket
+          body = [
+            h('div', { className: 'sk-head' },
+              h(ButtonLite, { onClick: () => { setMarketView('cards'); setSearchMarketAll('') } }, t('backMarketCards')),
+              h('span', { className: 'sk-title' }, t('allMarketTitle')),
+              h(InputBox, { value: searchMarketAll, placeholder: t('searchAll'), onSearch: setSearchMarketAll }),
+              h('span', { className: 'spacer' }),
+              h(Tag, null, `${sk.length} ${t('skillsSuffix')}`)),
+            sk.length
+              ? h(PagedGrid, { key: 'ma' + searchMarketAll, items: sk, t,
+                  render: s => h(SkillCard, { key: s.name, row: mkRow(s.source), s: mkCard(s), t,
+                    onOpen: item => openDetail({ name: item.installName || item.name }, null),
+                    onInstall: (_r, name) => setPendingInstall({ row: null, name }),
+                    onDelete: () => {} }) })
+              : h(Empty, null, t('emptySearch')),
+          ]
         } else {
           body = [
             h('div', { className: 'sk-toolbar' },
-              h(InputBox, { value: searchMarket, placeholder: t('searchAll'), onSearch: setSearchMarket }),
-              h(SourceFilterStatic, { sources: base.sources, value: marketFilter, onChange: setMarketFilter }),
+              h('span', { className: 'sk-hint' }, t('marketCardsHint')),
               h('span', { className: 'spacer' }),
-              h(Tag, null, `${marketList.length} ${t('skillsSuffix')}`)),
-            marketList.length
-              ? h('div', { className: 'sk-grid' }, marketList.map(s =>
-                  h(SkillCard, { key: s.name, row: { key: '@market', label: splitSource(s.source), readOnly: false, deletable: false }, s: { ...s, name: s.shortName || s.name, keywords: s.keywords, totalSize: s.totalSize }, t,
-                    onOpen: item => openDetail(item, null),
-                    onInstall: (_r, name) => setPendingInstall({ row: null, name }),
-                    onDelete: () => {} })))
+              h(ButtonLite, { primary: true, onClick: () => setMarketView('all') }, `${t('browseAllMarket')} (${allMarket.length})`)),
+            base.sources.length
+              ? h('div', { className: 'sk-src' }, base.sources.map(src =>
+                  h('div', { key: src.source, className: 'sk-card', role: 'button', tabIndex: 0,
+                    onClick: () => { setMarketDrill(src.source); setSearchMarketDrill('') } },
+                    h('span', { className: 'sk-title' }, src.displayName || src.source),
+                    h('span', { className: 'sk-count' }, src.skills),
+                    h('span', { className: 'sk-hint' }, t('skillsSuffix')))))
               : h(Empty, null, t('emptySearch')),
           ]
         }
@@ -751,9 +805,9 @@ window.__ModuleLoader__.load({
           h('span', { className: 'sk-title', style: { fontSize: 16 } }, t('title')),
           h('span', { className: 'spacer' }),
           h(ButtonLite, { onClick: () => onClose && onClose() }, t('close'))),
-        h('div', { className: 'sk-tabs' }, ['executors', 'market', 'sources', 'installed'].map(key =>
+        h('div', { className: 'sk-tabs' }, ['executors', 'market', 'installed'].map(key =>
           h('button', { key, className: 'sk-tabpill' + (tab === key ? ' on' : ''), style: pillStyle(tab === key),
-            onClick: () => { setTab(key); setFilterExecutor('all'); setExecutorView('cards'); setSearchExec(''); setSearchDrill(''); setSearchAll('') } }, t('tab' + key[0].toUpperCase() + key.slice(1))))),
+            onClick: () => { setTab(key); setFilterExecutor('all'); setExecutorView('cards'); setSearchExec(''); setSearchDrill(''); setSearchAll(''); setMarketView('cards'); setMarketDrill(null); setSearchMarketDrill(''); setSearchMarketAll('') } }, t('tab' + key[0].toUpperCase() + key.slice(1))))),
         h('div', null, body),
         sel && h(DetailModal, { sel, executors, t,
           onClose: () => setSel(null),
@@ -782,12 +836,10 @@ window.__ModuleLoader__.load({
         }, null))
       }
 
-    function SourceFilterStatic({ sources, value, onChange }) {  return h('select', { value, onChange: e => onChange(e.target.value),
-          style: selectStyle() },
-        h('option', { value: 'all' }, 'All Sources'),
-        sources.map(s => h('option', { key: s.source, value: s.source }, (s.displayName || s.source) + ` (${s.skills})`)))
-    }
     function splitSource(source) { return source.split('/')[0] || source }
+    /** Market rows carry the full repo path in .name; cards display the short
+     *  name but install/detail must POST the full one. */
+    function mkCard(s) { return { ...s, name: s.shortName || s.name, installName: s.name } }
     function selectStyle() {
       return { minHeight: 30, borderRadius: 8, border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-specific-input-major, var(--dsw-alias-bg-layer-1))', color: 'var(--dsw-alias-label-primary)', padding: '4px 10px' }
     }
