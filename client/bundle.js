@@ -581,11 +581,22 @@ window.__ModuleLoader__.load({
       const [tick, forceTick] = useState(0)
       const rootRef = useRef(null)
 
-      const reload = () => {
-        getJson(API).then(setBase).catch(() => {})
+      // Two data planes with very different costs: the executor summary is a
+      // fast (~0.2s) count scan, while GET / walks the whole market collection
+      // (~2.3s). Load the summary eagerly and the market set lazily — only when
+      // a tab that needs it is opened, and re-fetch it after mutations.
+      const [baseStale, setBaseStale] = useState(true)
+      const reloadExecutors = () => {
         getJson(API + '/executors?mode=summary').then(d => setExecutors(d.executors || [])).catch(() => {})
       }
-      useEffect(reload, [])
+      const reloadBase = () => {
+        setBaseStale(false)
+        getJson(API).then(setBase).catch(() => {})
+      }
+      useEffect(reloadExecutors, [])
+      useEffect(() => {
+        if (['market', 'sources', 'installed'].includes(tab) && baseStale) reloadBase()
+      }, [tab, baseStale])
 
       // Load full lists for one executor on demand
       useEffect(() => {
@@ -626,14 +637,16 @@ window.__ModuleLoader__.load({
           const r = await fetch(API + '/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
           if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status)
           setToastText(t('installedToast'))
-          reload()
+          reloadExecutors()
+          setBaseStale(true)
         } catch (e) { alert(t('operationFailed') + ': ' + e.message) }
       }
       const doPendingDelete = async () => {
         if (!pendingDelete) return
         await quickDelete(t, pendingDelete.executor, pendingDelete.name, afterChange)
         setPendingDelete(null)
-        reload()
+        reloadExecutors()
+        setBaseStale(true)
       }
 
       let body = null
@@ -722,7 +735,9 @@ window.__ModuleLoader__.load({
             onClick: () => { setTab(key); setFilterExecutor('all'); setExecutorView('cards'); setSearchExec(''); setSearchDrill(''); setSearchAll('') } }, t('tab' + key[0].toUpperCase() + key.slice(1))))),
         h('div', null, body),
         sel && h(DetailModal, { sel, executors, t,
-          onClose: () => setSel(null), onInstalled: () => { setSel(null); reload() }, onDeleted: () => { setSel(null); reload() } }),
+          onClose: () => setSel(null),
+          onInstalled: () => { setSel(null); reloadExecutors(); setBaseStale(true) },
+          onDeleted: () => { setSel(null); reloadExecutors(); setBaseStale(true) } }),
         pendingInstall && P && P.Modal && h(P.Modal, {
           open: true,
           onClose: () => setPendingInstall(null),
