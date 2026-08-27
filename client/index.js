@@ -833,6 +833,10 @@ module.exports = {
       }
     } catch (e) { try { console.error('[skills-management] locale init:', e) } catch {} }
     globalThis.__skillsAppliedCount = ((globalThis.__skillsAppliedCount || 0) + 1)
+    if (typeof document !== 'undefined' && !__overlay) {
+      __overlay = createSkOverlay(t)
+      globalThis.__skToggle = () => (__overlay._open ? __overlay.hide() : __overlay.show())
+    }
     ctx.effect(() => {
       try {
       ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
@@ -841,7 +845,7 @@ module.exports = {
         order: 50,
         inject: () => ({ t }),
       }, function FooterSlot(apiProps) {
-        return h(FooterActionEntry, { t, label: apiProps?.t ? apiProps.t('title') : 'Skills Market' })
+        return h(FooterActionEntry, { t, label: apiProps?.t ? apiProps.t('title') : t('title') })
       }))
       } catch (e) { (globalThis.__skErrors = globalThis.__skErrors || []).push('footer:' + (e && e.message)); throw e }
     }, 'skills-management: sidebar footer action')
