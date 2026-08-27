@@ -240,6 +240,7 @@ const STYLE = `<style>
 .sk-card{display:flex;flex-direction:column;gap:10px;padding:16px;border-radius:12px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);cursor:pointer;text-align:left}
 .sk-card:hover{border-color:var(--dsw-alias-border-l3);background:var(--dsw-alias-interactive-bg-hover)}
 .sk-card.missing{opacity:.5;cursor:default}
+.sk-avatar.sq{border-radius:12px}
 .sk-avatar{width:42px;height:42px;border-radius:11px;display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--dsw-alias-label-primary-inverted,#fff);font-size:17px;flex:none}
 .sk-title{font-weight:600;word-break:break-all}
 .sk-desc{color:var(--dsw-alias-label-secondary);font-size:13px;line-height:1.5;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
@@ -291,8 +292,10 @@ const Spinner = ({ label }) =>
 
 const Empty = ({ children }) => h('div', { className: 'sk-empty' }, children)
 
-function Avatar({ name }) {
-  return h('div', { className: 'sk-avatar', style: { background: gradient(name) } },
+function Avatar({ name, square, size }) {
+  const sizing = size ? { width: size, height: size, fontSize: Math.round(size * 0.42) } : {}
+  return h('div', { className: 'sk-avatar' + (square ? ' sq' : ''),
+      style: { background: gradient(name), ...sizing } },
     (name[0] || '?').toUpperCase())
 }
 
@@ -377,6 +380,7 @@ function ExecutorCard({ row, t, onEnter }) {
       onClick: () => row.dirExists && onEnter(row.key),
       onKeyDown: e => e.key === 'Enter' && row.dirExists && onEnter(row.key) },
     h('div', { className: 'sk-head' },
+      h(Avatar, { name: row.label, square: true, size: 40 }),
       h('span', { className: 'sk-title' }, row.label),
       row.readOnly && h(Tag, { tone: 'danger' }, t('readOnlyTag')),
       row.key === 'dsh' && h(Tag, { tone: 'accent' }, t('meTag'))),
@@ -763,7 +767,9 @@ function SkillsPage({ t, onClose, embedded }) {
           ? h('div', { className: 'sk-src' }, base.sources.map(src =>
               h('div', { key: src.source, className: 'sk-card', role: 'button', tabIndex: 0,
                 onClick: () => { setMarketDrill(src.source); setSearchMarketDrill('') } },
-                h('span', { className: 'sk-title' }, src.displayName || src.source),
+                h('div', { className: 'sk-head' },
+                  h(Avatar, { name: src.displayName || src.source, square: true, size: 40 }),
+                  h('span', { className: 'sk-title' }, src.displayName || src.source)),
                 h('span', { className: 'sk-count' }, src.skills),
                 h('span', { className: 'sk-hint' }, t('skillsSuffix')))))
           : h(Empty, null, t('emptySearch')),
