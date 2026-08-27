@@ -814,9 +814,10 @@ window.__ModuleLoader__.load({
       useEffect(() => panelStore.subscribe(setOpen), [])
       useEffect(ensureStyles, [])
       const t = props.__t
+      const labelText = t ? t('title') : 'Skills Market'
       return h('span', { style: { display: 'contents' } },
-        h('button', { title: 'Skills Market', onClick: () => panelStore.set(!panelStore.open),
-            style: footerStyle() }, '\u{1F3AF} ', props.label || (t ? t('title') : 'Skills Market')),
+        h('button', { title: labelText, 'aria-label': labelText, onClick: () => panelStore.set(!panelStore.open),
+            style: footerStyle() }, '\u{1F3AF} ', labelText),
         open && (() => {
           const page = h(SkillsPage, { t, embedded: false, onClose: () => panelStore.set(false) })
           // Fullscreen: portal the fixed-position page to <body> so no sidebar
@@ -885,9 +886,11 @@ window.__ModuleLoader__.load({
             name: 'sidebar.footer.action',
             id: CLIENT_NAME,
             order: 50,
+            locale: NS,
+            label: () => t('title'),
             inject: () => ({ t }),
-          }, function FooterSlot(apiProps) {
-            return h(FooterSlotComponent, { __t: t, label: apiProps?.t ? apiProps.t('title') : undefined })
+          }, function FooterSlot() {
+            return h(FooterSlotComponent, { __t: t })
           }))
           } catch (e) { (globalThis.__skErrors = globalThis.__skErrors || []).push('footer:' + (e && e.message)); throw e }
         }, 'skills-management: sidebar footer action')
