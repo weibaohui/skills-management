@@ -109,9 +109,10 @@ const ZH = {
   cancel: '取消',
   installedToast: '已装入 DSH 技能库',
   marketLabel: '市场',
-  installConfirm: '把 “{name}” 从 {label} 复制到 DSH 技能库？复制后即可通过 DSH 的 skill 工具调用。',
+  installConfirm: '即将把「{name}」从「{label}」安装到 DSH 技能库，安装后可通过 DSH 的 skill 工具调用。',
   installFromMarket: '从市场安装 {name}？',
-  deleteConfirm: '确认从 {where} 删除 “{name}” ？',
+  deleteTitle: '删除技能',
+  deleteConfirm: '即将从「{where}」删除技能「{name}」，删除后不可恢复。',
   whereDsh: 'DSH 技能库',
   operationFailed: '操作失败',
   preview: '文件预览',
@@ -168,9 +169,10 @@ const EN = {
   cancel: 'Cancel',
   installedToast: 'Installed into the DSH library',
   marketLabel: 'Market',
-  installConfirm: 'Copy "{name}" from {label} into the DSH skills library? It becomes callable through the DSH skill tool.',
+  installConfirm: 'Install "{name}" from {label} into the DSH skills library. It becomes callable through the DSH skill tool.',
   installFromMarket: 'Install {name} from market?',
-  deleteConfirm: 'Delete "{name}" from {where}?',
+  deleteTitle: 'Delete skill',
+  deleteConfirm: 'You are about to delete "{name}" from {where}. This cannot be undone.',
   whereDsh: 'the DSH library',
   operationFailed: 'Operation failed',
   preview: 'File preview',
@@ -487,13 +489,13 @@ function DetailModal({ sel, executors, t, onClose, onInstalled, onDeleted }) {
                     ? h(P.MarkdownText, { text: data?.content || '' })
                     : h('pre', { style: { whiteSpace: 'pre-wrap', margin: 0 } }, data?.content || '')))),
     confirming && h(SkDialog, {
-      title: t('deleteConfirm', { name: sel.name, where: row ? row.label : t('whereDsh') }),
+      title: t('deleteTitle'),
       onClose: () => setConfirming(false),
       footer: [
-        h(ButtonLite, { onClick: () => setConfirming(false) }, t('close')),
+        h(ButtonLite, { onClick: () => setConfirming(false) }, t('cancel')),
         h(ButtonLite, { danger: true, primary: true, onClick: doDelete }, t('deleteBtn')),
       ],
-    }, null),
+    }, h('div', { className: 'sk-hint' }, t('deleteConfirm', { name: sel.name, where: row ? row.label : t('whereDsh') }))),
     toast && h(InToast, { text: t('copied') }))
 }
 
@@ -817,16 +819,16 @@ function SkillsPage({ t, onClose, embedded }) {
         t('installConfirm', { name: pendingInstall.name, label: pendingInstall.row ? pendingInstall.row.label : t('marketLabel') }))),
     toastText && h(InToast, { text: toastText }),
     pendingDelete && h(SkDialog, {
-      title: t('deleteConfirm', {
-        name: pendingDelete.name,
-        where: pendingDelete.executor === 'dsh' || !pendingDelete.executor ? t('whereDsh') : ((executors.find(x => x.key === pendingDelete.executor) || {}).label || pendingDelete.executor),
-      }),
+      title: t('deleteTitle'),
       onClose: () => setPendingDelete(null),
       footer: [
-        h(ButtonLite, { onClick: () => setPendingDelete(null) }, t('close')),
+        h(ButtonLite, { onClick: () => setPendingDelete(null) }, t('cancel')),
         h(ButtonLite, { primary: true, danger: true, onClick: doPendingDelete }, t('deleteBtn')),
       ],
-    }, null))
+    }, h('div', { className: 'sk-hint' }, t('deleteConfirm', {
+      name: pendingDelete.name,
+      where: pendingDelete.executor === 'dsh' || !pendingDelete.executor ? t('whereDsh') : ((executors.find(x => x.key === pendingDelete.executor) || {}).label || pendingDelete.executor),
+    }))))
   }
 
 function splitSource(source) { return source.split('/')[0] || source }
