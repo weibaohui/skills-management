@@ -20,10 +20,10 @@ window.__ModuleLoader__.load({
 
     // React is a loader platform module. Under plain Node (contract tests) a
     // minimal createElement/hook shim keeps the source loadable for assertions.
-    let React = null
-    try { React = require('react') } catch {}
-    if (!React || typeof React.createElement !== 'function') {
-      React = {
+    let __React = null
+    try { __React = require('react') } catch {}
+    if (!__React || typeof __React.createElement !== 'function') {
+      __React = {
         createElement(type, props, ...kids) {
           return { type, props: props || {}, kids: kids.flat(9).filter(k => k !== null && k !== undefined && k !== false && k !== true && typeof k !== 'string' || true) }
         },
@@ -31,13 +31,32 @@ window.__ModuleLoader__.load({
         useEffect() {}, useMemo(fn) { return fn() }, useRef(v = null) { return { current: v } },
       }
     }
-    const { createElement: h, useState, useEffect, useMemo, useRef } = React
+    const { createElement: h, useState, useEffect, useMemo, useRef } = __React
 
     // Platform module — always present in the loader's seeded require table.
     // Under plain Node (tests) it is absent; a tagged-element shim keeps the
     // tree structurally testable while every real surface ships primitives.
     let P = null
     try { P = require('@deepseek-ai/dsh-client-ui-primitives') } catch {}
+
+    // Render error boundary: surfaces mount-time crashes on screen (and into
+    // window.__skErrors) instead of leaving a blank overlay behind.
+    const BoundaryBase = (typeof __React === 'object' && __React && __React.Component) ? __React.Component : class {}
+    class SkBoundary extends BoundaryBase {
+      constructor(props) { super(props); this.state = { err: null } }
+      static getDerivedStateFromError(err) { return { err } }
+      componentDidCatch(err) {
+        ;(globalThis.__skErrors = globalThis.__skErrors || []).push('render: ' + (err && (err.stack || err.message) || String(err)))
+        if (typeof this.props.onCrash === 'function') setTimeout(this.props.onCrash, 0)
+      }
+      render() {
+        if (this.state.err) {
+          return h('div', { className: 'sk-empty', style: { margin: 20, color: 'var(--dsw-alias-state-error-primary)' } },
+            '⚠️ ' + ((this.state.err && this.state.err.message) || String(this.state.err)))
+        }
+        return this.props.children
+      }
+    }
 
     const prim = (name) => P && P[name]
       ? P[name]
@@ -734,17 +753,25 @@ window.__ModuleLoader__.load({
       const [open, setOpen] = useState(false)
       useEffect(() => {
         if (!open) return
-        const mount = document.createElement('div')
-        mount.className = 'sk-overlay-host'
-        document.body.appendChild(mount)
-        const cleanupUser = () => {}
-        props.onMount && props.onMount(mount)
-        const root = require('react-dom/client').createRoot(mount)
-        root.render(h(WithLocale, null, h(SkillsPage, { onClose: () => setOpen(false) })))
-        return () => { root.unmount(); mount.remove() }
+        try {
+          const mount = document.createElement('div')
+          mount.className = 'sk-overlay-host'
+          document.body.appendChild(mount)
+          const root = require('react-dom/client').createRoot(mount)
+          root.render(h(SkBoundary, { onCrash: () => setOpen(false) }, h(WithLocale, null, h(SkillsPage, { onClose: () => setOpen(false) }))))
+          return () => { root.unmount(); mount.remove() }
+        } catch (e) {
+          ;(globalThis.__skErrors = globalThis.__skErrors || []).push('overlay:' + (e && (e.stack || e.message)))
+          setOpen(false)
+        }
       }, [open])
       if (open) return null
-      return h('button', { title: 'Skills Market', 'aria-label': '🎯 Skills Market', onClick: () => setOpen(true),
+      return h('button', { title: 'Skills Market', 'aria-label': '🎯 Skills Market',
+          onClick: () => {
+            ;(globalThis.__skClicks = (globalThis.__skClicks || 0) + 1)
+            try { props.t && props.t('__ping__') } catch (e) { (globalThis.__skErrors = globalThis.__skErrors || []).push('t:' + (e && e.message)) }
+            setOpen(true)
+          },
           style: footerStyle() }, '🎯 ', props.label || '')
     }
 
@@ -755,7 +782,7 @@ window.__ModuleLoader__.load({
         const inner = document.createElement('div')
         holder.appendChild(inner)
         const root = require('react-dom/client').createRoot(inner)
-        root.render(h(WithLocale, null, h(SkillsPage, { embedded: true })))
+        root.render(h(SkBoundary, null, h(WithLocale, null, h(SkillsPage, { embedded: true }))))
         return () => { root.unmount(); inner.remove() }
       }, [holder])
       return h('div', { ref: setHolder, style: { minHeight: '60vh' } })
@@ -773,19 +800,51 @@ window.__ModuleLoader__.load({
 
     // ── Plugin plane contract ────────────────────────────────────────────────
 
-    const CLIENT_NAME = 'skills-management-client'
+    const CLIENT_NAME = 'dsh-plugin-skills-management'
 
     module.exports = {
       name: CLIENT_NAME,
       inject: ['slots', 'locale'],
       __internals: { NS, ZH, EN, matchSkill, formatSize, formatTime },
+      /** Test/host helper: mount a standalone page into any container. */
+      __boot(container, opts = {}) {
+        let t = opts.t || ((key, vars) => {
+          let out = EN[key] ?? key
+          if (vars) for (const [k, v] of Object.entries(vars)) out = out.split('{' + k + '}').join(String(v))
+          return out
+        })
+        try {
+          if (!opts.t && globalThis.document && !(container.ownerDocument !== document)) { /* noop */ }
+        } catch {}
+        const root = require('react-dom/client').createRoot(container)
+        root.render(h(SkBoundary, null, h(SkillsPage, { t, embedded: !!opts.embedded })))
+        return root
+      },
       apply(ctx) {
+        // Locale service is optional at boot order — degrade to EN until present
+        let t = (key, vars) => {
+          let out = EN[key] ?? key
+          if (vars) for (const [k, v] of Object.entries(vars)) out = out.split('{' + k + '}').join(String(v))
+          return out
+        }
+        try {
+          if (ctx.locale && typeof ctx.locale.register === 'function') {
+            ctx.locale.register(NS, 'zh', ZH)
+            ctx.locale.register(NS, 'en', EN)
+            const bound = typeof ctx.locale.bind === 'function' ? ctx.locale.bind(NS) : null
+            if (bound) {
+              t = (key, vars) => {
+                let out = bound(key) || key
+                if (vars) for (const [k, v] of Object.entries(vars)) out = out.split('{' + k + '}').join(String(v))
+                return out
+              }
+              globalThis.__skillsLocaleLive = true
+            }
+          }
+        } catch (e) { try { console.error('[skills-management] locale init:', e) } catch {} }
+        globalThis.__skillsAppliedCount = ((globalThis.__skillsAppliedCount || 0) + 1)
         ctx.effect(() => {
-          ctx.locale.register(NS, 'zh', ZH)
-          ctx.locale.register(NS, 'en', EN)
-        }, 'skills-management: locale dict')
-        const t = ctx.locale.bind(NS)
-        ctx.effect(() => {
+          try {
           ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
             name: 'sidebar.footer.action',
             id: CLIENT_NAME,
@@ -794,8 +853,10 @@ window.__ModuleLoader__.load({
           }, function FooterSlot(apiProps) {
             return h(FooterActionEntry, { t, label: apiProps?.t ? apiProps.t('title') : 'Skills Market' })
           }))
+          } catch (e) { (globalThis.__skErrors = globalThis.__skErrors || []).push('footer:' + (e && e.message)); throw e }
         }, 'skills-management: sidebar footer action')
         ctx.effect(() => {
+          try {
           ctx.slots.inject('settings.section', () => ctx.slots.register({
             name: 'settings.section',
             id: CLIENT_NAME,
@@ -806,6 +867,7 @@ window.__ModuleLoader__.load({
           }, function SettingsSectionSlot() {
             return h(SettingsSectionEntry, null)
           }))
+          } catch (e) { (globalThis.__skErrors = globalThis.__skErrors || []).push('settings:' + (e && e.message)); throw e }
         }, 'skills-management: settings section')
       },
     }
