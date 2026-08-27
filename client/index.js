@@ -250,6 +250,7 @@ const STYLE = `<style>
 .sk-chips{display:flex;gap:6px;flex-wrap:wrap}
 .sk-rowbtns{display:flex;gap:6px}
 .sk-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.sk-countline{display:flex;align-items:baseline;gap:2px;color:var(--dsw-alias-label-secondary);font-size:13px}
 .sk-count{font-size:26px;font-weight:700;color:var(--dsw-alias-brand-primary,var(--dsw-alias-state-business-primary))}
 .sk-count.none{color:var(--dsw-alias-label-dimmed,var(--dsw-alias-label-tertiary))}
 .sk-empty{border:1px dashed var(--dsw-alias-border-l2);border-radius:12px;padding:44px 20px;text-align:center;color:var(--dsw-alias-label-secondary)}
@@ -397,8 +398,11 @@ function ExecutorCard({ row, t, onEnter }) {
       h('span', { className: 'sk-title' }, row.label),
       row.readOnly && h(Tag, { tone: 'danger' }, t('readOnlyTag')),
       row.key === 'dsh' && h(Tag, { tone: 'accent' }, t('meTag'))),
-    h('div', { className: 'sk-count' + (count ? '' : ' none') }, row.dirExists ? String(count) : '—'),
-    h('div', { className: 'sk-hint' }, row.dirExists ? `${t('skillsSuffix')}${sizeTotal != null ? ' · ' + formatSize(sizeTotal) : ''}` : t('dirNotPresent')),
+    h('div', { className: 'sk-countline' },
+      row.dirExists
+        ? [h('span', { key: 'n', className: 'sk-count' + (count ? '' : ' none') }, String(count)),
+           ' ' + t('skillsSuffix') + (sizeTotal != null ? ' · ' + t('totalSize', { size: formatSize(sizeTotal) }) : '')]
+        : t('dirNotPresent')),
     h('div', { className: 'sk-dir' }, row.dir))
 }
 
@@ -783,8 +787,8 @@ function SkillsPage({ t, onClose, embedded }) {
                 h('div', { className: 'sk-head' },
                   h(Avatar, { name: src.displayName || src.source, square: true, size: 40 }),
                   h('span', { className: 'sk-title' }, src.displayName || src.source)),
-                h('span', { className: 'sk-count' }, src.skills),
-                h('span', { className: 'sk-hint' }, t('skillsSuffix')))))
+                h('div', { className: 'sk-countline' },
+                  h('span', { className: 'sk-count' }, src.skills), ' ' + t('skillsSuffix')))))
           : h(Empty, null, t('emptySearch')),
       ]
     }
