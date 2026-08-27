@@ -278,6 +278,15 @@ window.__ModuleLoader__.load({
     .sk-dlg{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);border-radius:14px;min-width:340px;max-width:640px;max-height:82vh;overflow:auto;padding:18px;box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-primary);font-family:var(--dsw-font-family)}
     .sk-dlg h3{margin:0 0 12px;font-size:15px}
     .sk-dlg-foot{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
+    .sk-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:32px;padding:6px 16px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-size:13px;font-weight:500;cursor:pointer;font-family:var(--dsw-font-family);white-space:nowrap}
+    .sk-btn:hover{border-color:var(--dsw-alias-border-l3);background:var(--dsw-alias-interactive-bg-hover)}
+    .sk-btn:disabled{opacity:.5;cursor:not-allowed}
+    .sk-btn-primary{background:var(--dsw-alias-state-business-primary);border-color:transparent;color:var(--dsw-alias-label-primary-inverted,#fff)}
+    .sk-btn-primary:hover{filter:brightness(1.08);background:var(--dsw-alias-state-business-primary)}
+    .sk-btn-sm{min-height:28px;padding:4px 12px;font-size:12.5px;min-width:64px}
+    .sk-input{min-height:32px;padding:6px 12px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-size:13px;font-family:var(--dsw-font-family);outline:none}
+    .sk-input:focus{border-color:var(--dsw-alias-state-business-primary)}
+    .sk-input::placeholder{color:var(--dsw-alias-label-tertiary)}
     .sk-toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:40;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l2);border-radius:999px;padding:8px 18px;font-size:13px;box-shadow:var(--dsw-shadow-lv2)}
     .sk-tabpill{background:transparent;border:none;color:var(--dsw-alias-label-secondary);font-family:var(--dsw-font-family)}
     </style>`
@@ -370,16 +379,18 @@ window.__ModuleLoader__.load({
     /** Tiny variant buttons before P.Button availability resolution settles —
      *  unified through primitives in the browser via data-p-* swap below. */
     function ButtonLite({ primary, danger, small, children, onClick }) {
+      const cls = 'sk-btn' + (primary ? ' sk-btn-primary' : '') + (small ? ' sk-btn-sm' : '')
       if (prim('Button')) {
         return h(P.Button, {
           variant: primary ? 'primary' : 'outline',
           size: small ? 'sm' : 'md',
+          className: cls,
           onClick,
         }, children)
       }
       return h('button', {
         onClick,
-        'data-p': primary ? 'primary' : danger ? 'danger' : 'outline',
+        className: cls,
       }, children)
     }
 
@@ -602,7 +613,7 @@ window.__ModuleLoader__.load({
 
     function InputBox({ value, placeholder, onSearch }) {
       if (prim('Input')) {
-        return h(P.Input, { value, placeholder, onChange: e => onSearch(e.target.value),
+        return h(P.Input, { value, placeholder, className: 'sk-input', onChange: e => onSearch(e.target.value),
           style: { minWidth: 220 } })
       }
       return h('input', { value, placeholder, onChange: e => onSearch(e.target.value),
