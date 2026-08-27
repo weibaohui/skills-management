@@ -338,7 +338,7 @@ function SkillCard({ row, s, t, onOpen, onInstall, onDelete }) {
       h('div', { className: 'sk-rowbtns' },
         row.key !== 'dsh' && h(ButtonLite, { primary: true, small: true,
           onClick: e => { e.stopPropagation(); onInstall(row, s.name) } }, t('toDsh')),
-        !row.readOnly && h(ButtonLite, { danger: true, small: true,
+        (row.deletable !== false && !row.readOnly) && h(ButtonLite, { danger: true, small: true,
           onClick: e => { e.stopPropagation(); onDelete(row, s.name) } }, t('deleteBtn')))))
 }
 
@@ -722,7 +722,7 @@ function SkillsPage({ t, onClose, embedded }) {
           h(Tag, null, `${marketList.length} ${t('skillsSuffix')}`)),
         marketList.length
           ? h('div', { className: 'sk-grid' }, marketList.map(s =>
-              h(SkillCard, { key: s.name, row: { key: '@market', label: splitSource(s.source), readOnly: false }, s: { ...s, name: s.shortName || s.name, keywords: s.keywords, totalSize: s.totalSize }, t,
+              h(SkillCard, { key: s.name, row: { key: '@market', label: splitSource(s.source), readOnly: false, deletable: false }, s: { ...s, name: s.shortName || s.name, keywords: s.keywords, totalSize: s.totalSize }, t,
                 onOpen: item => openDetail(item, null),
                 onInstall: (_r, name) => setPendingInstall({ row: null, name }),
                 onDelete: () => {} })))
