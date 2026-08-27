@@ -654,7 +654,7 @@ function SkillsPage({ t, onClose, embedded }) {
   }
   const doPendingDelete = async () => {
     if (!pendingDelete) return
-    await quickDelete(t, pendingDelete.executor, pendingDelete.name, afterChange)
+    await quickDelete(t, pendingDelete.executor, pendingDelete.name)
     setPendingDelete(null)
     reloadExecutors()
     setBaseStale(true)
@@ -796,7 +796,7 @@ async function quickDelete(t, executor, name, done) {
     if (executor) body.executor = executor
     const r = await fetch(API, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status)
-    done()
+    if (typeof done === 'function') done()
   } catch (e) { alert(t('operationFailed') + ': ' + e.message) }
 }
 
