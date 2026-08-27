@@ -229,13 +229,14 @@ window.__ModuleLoader__.load({
       _renderToolbar() {
         const tb = this.root.querySelector('#sk-toolbar')
         // The toolbar is rebuilt from scratch often (lazy scans, refreshes).
-        // Preserve focus/selection so typing into the search box survives it.
+        // Preserve the focused element's value AND caret so typing survives it.
         const doc = this.root.ownerDocument
         const prevActive = doc.activeElement
         const preserveId = prevActive && tb.contains(prevActive) && prevActive.id ? prevActive.id : null
-        let preservePos = null
+        let preserveValue = null, preservePos = null
         if (preserveId === 'sk-search') {
-          try { preservePos = prevActive.selectionStart ?? prevActive.value.length } catch { preservePos = prevActive.value.length }
+          preserveValue = prevActive.value
+          try { preservePos = prevActive.selectionStart ?? preserveValue.length } catch { preservePos = preserveValue.length }
         } else if (preserveId === 'sk-filter') {
           preservePos = prevActive.selectedIndex
         }
@@ -243,6 +244,7 @@ window.__ModuleLoader__.load({
         if (preserveId !== null) {
           const el = tb.querySelector('#' + preserveId)
           if (el) {
+            if (preserveId === 'sk-search' && preserveValue !== null) el.value = preserveValue
             el.focus()
             if (preserveId === 'sk-search') { try { el.setSelectionRange(preservePos, preservePos) } catch {} }
             else if (preservePos !== null) el.selectedIndex = preservePos
