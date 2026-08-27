@@ -749,30 +749,30 @@ window.__ModuleLoader__.load({
         font: 'inherit', fontSize: 13, cursor: 'pointer', width: 'calc(100% - 20px)', textAlign: 'left' }
     }
 
+    /** Singleton overlay controller: mounts once at apply(), toggles visibility.
+     *  Slot entries re-render frequently (sidebar churn); keeping React state out
+     *  of them avoids the overlay being torn down on every parent remount. */
+    let __overlay = null
+
+    function createSkOverlay(t) {
+      const mount = document.createElement('div')
+      mount.className = 'sk-overlay-host'
+      mount.style.display = 'none'
+      document.body.appendChild(mount)
+      const root = require('react-dom/client').createRoot(mount)
+      const api = {
+        _open: false,
+        show() { mount.style.display = ''; api._open = true },
+        hide() { mount.style.display = 'none'; api._open = false },
+      }
+      root.render(h(SkBoundary, null, h(WithLocale, null, h(SkillsPage, { t, onClose: api.hide }))))
+      return api
+    }
+
     function FooterActionEntry(props) {
-      const [open, setOpen] = useState(false)
-      useEffect(() => {
-        if (!open) return
-        try {
-          const mount = document.createElement('div')
-          mount.className = 'sk-overlay-host'
-          document.body.appendChild(mount)
-          const root = require('react-dom/client').createRoot(mount)
-          root.render(h(SkBoundary, { onCrash: () => setOpen(false) }, h(WithLocale, null, h(SkillsPage, { onClose: () => setOpen(false) }))))
-          return () => { root.unmount(); mount.remove() }
-        } catch (e) {
-          ;(globalThis.__skErrors = globalThis.__skErrors || []).push('overlay:' + (e && (e.stack || e.message)))
-          setOpen(false)
-        }
-      }, [open])
-      if (open) return null
-      return h('button', { title: 'Skills Market', 'aria-label': '🎯 Skills Market',
-          onClick: () => {
-            ;(globalThis.__skClicks = (globalThis.__skClicks || 0) + 1)
-            try { props.t && props.t('__ping__') } catch (e) { (globalThis.__skErrors = globalThis.__skErrors || []).push('t:' + (e && e.message)) }
-            setOpen(true)
-          },
-          style: footerStyle() }, '🎯 ', props.label || '')
+      return h('button', { title: 'Skills Market',
+          onClick: () => globalThis.__skToggle && globalThis.__skToggle(),
+          style: footerStyle() }, '\u{1F3AF} ', props.label || '')
     }
 
     function SettingsSectionEntry() {
