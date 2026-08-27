@@ -48,6 +48,18 @@ class SkBoundary extends BoundaryBase {
   }
 }
 
+/** Idempotent stylesheet injection — the overlay/tab/card classes are
+ *  position-critical (.sk-overlay is position:fixed) so mounting without
+ *  them renders the panel invisibly at the end of <body>. */
+function ensureStyles() {
+  if (typeof document === 'undefined' || document.getElementById('sk-styles')) return
+  const holder = document.createElement('div')
+  holder.id = 'sk-styles'
+  holder.style.display = 'none'
+  holder.innerHTML = STYLE
+  document.head.appendChild(holder)
+}
+
 const prim = (name) => P && P[name]
   ? P[name]
   : function Shim(props) {
@@ -745,6 +757,7 @@ function footerStyle() {
 let __overlay = null
 
 function createSkOverlay(t) {
+  ensureStyles()
   const mount = document.createElement('div')
   mount.className = 'sk-overlay-host'
   mount.style.display = 'none'
@@ -769,6 +782,7 @@ function SettingsSectionEntry() {
   const [holder, setHolder] = useState(null)
   useEffect(() => {
     if (!holder) return
+    ensureStyles()
     const inner = document.createElement('div')
     holder.appendChild(inner)
     const root = require('react-dom/client').createRoot(inner)
@@ -798,6 +812,7 @@ module.exports = {
   __internals: { NS, ZH, EN, matchSkill, formatSize, formatTime },
   /** Test/host helper: mount a standalone page into any container. */
   __boot(container, opts = {}) {
+    ensureStyles()
     let t = opts.t || ((key, vars) => {
       let out = EN[key] ?? key
       if (vars) for (const [k, v] of Object.entries(vars)) out = out.split('{' + k + '}').join(String(v))
