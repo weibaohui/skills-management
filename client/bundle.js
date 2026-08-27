@@ -108,7 +108,12 @@ window.__ModuleLoader__.load({
       copy: '复制内容',
       copied: '已复制到剪贴板',
       installFrom: '从 {label} 安装',
-      installConfirm: '把 “{name}” 从 {label} 复制到 DSH 技能库？\n复制后即可通过 DSH 的 skill 工具调用。',
+      installTitle: '装入 DSH',
+      installOk: '确认装入',
+      cancel: '取消',
+      installedToast: '已装入 DSH 技能库',
+      marketLabel: '市场',
+      installConfirm: '把 “{name}” 从 {label} 复制到 DSH 技能库？复制后即可通过 DSH 的 skill 工具调用。',
       installFromMarket: '从市场安装 {name}？',
       deleteConfirm: '确认从 {where} 删除 “{name}” ？',
       whereDsh: 'DSH 技能库',
@@ -156,6 +161,11 @@ window.__ModuleLoader__.load({
       copy: 'Copy content',
       copied: 'Copied to clipboard',
       installFrom: 'Install from {label}',
+      installTitle: 'Install to DSH',
+      installOk: 'Install',
+      cancel: 'Cancel',
+      installedToast: 'Installed into the DSH library',
+      marketLabel: 'Market',
       installConfirm: 'Copy "{name}" from {label} into the DSH skills library? It becomes callable through the DSH skill tool.',
       installFromMarket: 'Install {name} from market?',
       deleteConfirm: 'Delete "{name}" from {where}?',
@@ -604,6 +614,21 @@ window.__ModuleLoader__.load({
 
       const openDetail = (s, executorKey) => setSel({ name: s.name, executorKey })
       const [pendingDelete, setPendingDelete] = useState(null)
+      const [pendingInstall, setPendingInstall] = useState(null)
+      const [toastText, setToastText] = useState(null)
+      const doPendingInstall = async () => {
+        if (!pendingInstall) return
+        const { row, name } = pendingInstall
+        setPendingInstall(null)
+        try {
+          const body = { name }
+          if (row && row.key && row.key !== '@market') body.from = row.key
+          const r = await fetch(API + '/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+          if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status)
+          setToastText(t('installedToast'))
+          reload()
+        } catch (e) { alert(t('operationFailed') + ': ' + e.message) }
+      }
       const doPendingDelete = async () => {
         if (!pendingDelete) return
         await quickDelete(t, pendingDelete.executor, pendingDelete.name, afterChange)
@@ -619,7 +644,7 @@ window.__ModuleLoader__.load({
             onSearch: setSearchDrill,
             onBack: () => { setFilterExecutor('all'); setSearchDrill('') },
             onOpen: s => openDetail(s, row?.key),
-            onInstall: (r, name) => runInstall(t, { name, from: r.key }, afterChange),
+            onInstall: (r, name) => setPendingInstall({ row: r, name }),
             onDelete: (r, name) => setPendingDelete({ executor: r.key, name }) })
         } else if (executorView === 'all') {
           body = h(AllSkillsView, { executors, searchText: searchAll, sourceFilter, t,
@@ -627,7 +652,7 @@ window.__ModuleLoader__.load({
             onFilter: v => { setSourceFilter(v); if (v !== 'all') { setFilterExecutor(v); setSearchAll(''); setSearchExec('') } },
             onBack: () => setExecutorView('cards'),
             onOpen: s => { const owner = executors.find(x => x.dirExists && Array.isArray(x.skills) && x.skills.some(k => k.name === s.name)); openDetail(s, owner ? owner.key : sourceFilter !== 'all' ? sourceFilter : 'dsh') },
-            onInstall: (r, name) => runInstall(t, { name, from: r.key }, afterChange),
+            onInstall: (r, name) => setPendingInstall({ row: r, name }),
             onDelete: (r, name) => setPendingDelete({ executor: r.key, name }) })
         } else {
           body = h(CardsView, { executors, t,
@@ -675,7 +700,7 @@ window.__ModuleLoader__.load({
               ? h('div', { className: 'sk-grid' }, marketList.map(s =>
                   h(SkillCard, { key: s.name, row: { key: '@market', label: splitSource(s.source), readOnly: false }, s: { ...s, name: s.shortName || s.name, keywords: s.keywords, totalSize: s.totalSize }, t,
                     onOpen: item => openDetail(item, null),
-                    onInstall: (_r, name) => runInstall(t, { name }, afterChange),
+                    onInstall: (_r, name) => setPendingInstall({ row: null, name }),
                     onDelete: () => {} })))
               : h(Empty, null, t('emptySearch')),
           ]
@@ -698,6 +723,16 @@ window.__ModuleLoader__.load({
         h('div', null, body),
         sel && h(DetailModal, { sel, executors, t,
           onClose: () => setSel(null), onInstalled: () => { setSel(null); reload() }, onDeleted: () => { setSel(null); reload() } }),
+        pendingInstall && P && P.Modal && h(P.Modal, {
+          open: true,
+          onClose: () => setPendingInstall(null),
+          title: t('installTitle'),
+          footer: h('div', { className: 'sk-toolbar', style: { justifyContent: 'flex-end' } },
+            h(ButtonLite, { onClick: () => setPendingInstall(null) }, t('cancel')),
+            h(ButtonLite, { primary: true, onClick: doPendingInstall }, t('installOk'))),
+        }, h('div', { className: 'sk-hint', style: { maxWidth: 460 } },
+            t('installConfirm', { name: pendingInstall.name, label: pendingInstall.row ? pendingInstall.row.label : t('marketLabel') }))),
+        toastText && P && P.Toast && h(P.Toast, { text: toastText, onDone: () => setToastText(null) }),
         pendingDelete && P && P.Modal && h(P.Modal, {
           open: true,
           onClose: () => setPendingDelete(null),
@@ -729,14 +764,6 @@ window.__ModuleLoader__.load({
       }
     }
 
-    // install/delete REST helpers shared across views
-    async function runInstall(t, body, done) {
-      try {
-        const r = await fetch(API + '/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status)
-        done()
-      } catch (e) { alert(t('operationFailed') + ': ' + e.message) }
-    }
     async function quickDelete(t, executor, name, done) {
       try {
         const body = { name }
