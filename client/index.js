@@ -174,6 +174,10 @@ class SkillsApp {
     this.data = { sources:[], market:[], installed:[] }
     this.executors = []
     this.filterExecutor = 'all'
+    // Executors tab has two browse modes: executor cards (no search) and a
+    // flat all-skills grid (global search + per-source filter).
+    this.executorView = 'cards'
+    this.allSourceFilter = 'all'
     this.loading = true
     this.viewMode = 'executors'
     this.searchText = ""
@@ -249,12 +253,36 @@ class SkillsApp {
 
   _renderToolbarInto(tb) {
     if (this.viewMode === 'executors') {
-      const opts = this.executors.map(x => '<option value="' + x.key + '">' + x.label + ' (' + this._execCount(x) + ')</option>').join('')
-      tb.innerHTML = '<input class="skills-search" placeholder="Search all executor skills..." id="sk-search">' +
-        '<select class="skills-select" id="sk-filter"><option value="all"' + (this.filterExecutor === 'all' ? ' selected' : '') + '>All Executors (' + this._executorSkillTotal() + ')</option>' + opts + '</select>' +
-        '<div style="flex:1"></div><button class="skills-btn" id="sk-refresh">Refresh</button>'
-      tb.querySelector('#sk-search').oninput = (e) => { this.searchText = e.target.value; this._renderContent() }
-      tb.querySelector('#sk-filter').onchange = (e) => { this.filterExecutor = e.target.value; this.searchText = ''; this._renderToolbar(); this._renderContent() }
+      if (this.filterExecutor !== 'all') {
+        // Drilled into one executor — filter applies to that source only
+        const row = this.executors.find(x => x.key === this.filterExecutor)
+        tb.innerHTML = '<input class="skills-search" placeholder="Filter within ' + (row ? escapeHtml(row.label) : 'executor') + '…" id="sk-search">' +
+          '<div style="flex:1"></div><button class="skills-btn" id="sk-refresh">Refresh</button>'
+      } else if (this.executorView === 'cards') {
+        // Executor cards: navigation only, no skill search here
+        tb.innerHTML = '<span class="skills-source-label">Pick an executor to browse its skills, or view everything at once</span>' +
+          '<div style="flex:1"></div>' +
+          '<button class="skills-btn primary" id="sk-all">Browse all skills (' + this._executorSkillTotal() + ')</button>' +
+          '<div style="width:8px"></div><button class="skills-btn" id="sk-refresh">Refresh</button>'
+        tb.querySelector('#sk-all').onclick = () => { this.executorView = 'all'; this.searchText = ''; this.allSourceFilter = 'all'; this._renderToolbar(); this._renderContent() }
+      } else {
+        // All-skills grid — the only place with global search
+        const opts = this.executors.map(x => '<option value="' + x.key + '"' + (this.allSourceFilter === x.key ? ' selected' : '') + '>' + x.label + ' (' + this._execCount(x) + ')</option>').join('')
+        tb.innerHTML = '<input class="skills-search" placeholder="Search all skills..." id="sk-search">' +
+          '<select class="skills-select" id="sk-filter"><option value="all"' + (this.allSourceFilter === 'all' ? ' selected' : '') + '>All Executors (' + this._executorSkillTotal() + ')</option>' + opts + '</select>' +
+          '<div style="flex:1"></div><button class="skills-btn" id="sk-refresh">Refresh</button>'
+      }
+      const search = tb.querySelector('#sk-search')
+      if (search) search.oninput = (e) => { this.searchText = e.target.value; this._renderContent() }
+      const filter = tb.querySelector('#sk-filter')
+      if (filter) filter.onchange = (e) => {
+        this.allSourceFilter = e.target.value
+        if (e.target.value !== 'all') {   // picking a source drills into it
+          this.filterExecutor = e.target.value
+          this.searchText = ''
+          this._renderToolbar(); this._renderContent()
+        } else this._renderContent()
+      }
       tb.querySelector('#sk-refresh').onclick = () => this._loadData()
     } else if (this.viewMode === 'sources') {
       tb.innerHTML = '<input class="skills-search" placeholder="Search sources..." id="sk-search">' +
@@ -328,15 +356,30 @@ class SkillsApp {
   // ── Executors tab ──
 
   _renderExecutors(c) {
-    if (this.filterExecutor === 'all') return this._renderExecutorOverview(c)
+    if (this.filterExecutor !== 'all') return this._renderDrillIn(c)
+    if (this.executorView === 'all') return this._renderAllSkills(c)
+    return this._renderExecutorOverview(c)
+  }
 
+  _backToExecutors() {
+    this.filterExecutor = 'all'
+    this.searchText = ''
+    this._renderToolbar()
+    this._renderContent()
+  }
+
+  _drillBackLabel() {
+    return this.executorView === 'all' ? '&larr; All skills' : '&larr; Executors'
+  }
+
+  _renderDrillIn(c) {
     const row = this.executors.find(x => x.key === this.filterExecutor)
     if (!row) { c.innerHTML = ''; return }
     if (!row.dirExists) {
       c.innerHTML = '<div class="skills-empty"><div class="skills-empty-title">' + row.label + ': directory not found</div>' +
         '<div class="skills-empty-hint">Expected skills at ' + escapeHtml(row.dir) + '</div>' +
-        '<button class="skills-btn" id="sk-back-exec">&larr; Back to all executors</button></div>'
-      c.querySelector('#sk-back-exec').onclick = () => { this.filterExecutor = 'all'; this.searchText=''; this._renderToolbar(); this._renderContent() }
+        '<button class="skills-btn" id="sk-back-exec">' + this._drillBackLabel() + '</button></div>'
+      c.querySelector('#sk-back-exec').onclick = () => this._backToExecutors()
       return
     }
     // Summary rows carry no skill list yet — fetch just this source on demand
@@ -359,22 +402,64 @@ class SkillsApp {
       sk = sk.filter(s => (s.name||'').toLowerCase().includes(l) || (s.description||'').toLowerCase().includes(l) || (s.keywords||[]).some(k => k.toLowerCase().includes(l)))
     }
     if (!sk.length) { c.innerHTML = '<div class="skills-empty"><div class="skills-empty-title">' + (this.searchText ? 'No matching skills' : 'No skills in ' + row.label) + '</div>' +
-      '<button class="skills-btn" id="sk-back-exec">&larr; Back to all executors</button></div>';
-      c.querySelector('#sk-back-exec').onclick = () => { this.filterExecutor = 'all'; this.searchText=''; this._renderToolbar(); this._renderContent() }
+      '<button class="skills-btn" id="sk-back-exec">' + this._drillBackLabel() + '</button></div>';
+      c.querySelector('#sk-back-exec').onclick = () => this._backToExecutors()
       return }
 
     const head = document.createElement('div')
     head.style.cssText = 'display:flex;align-items:center;gap:10px'
-    head.innerHTML = '<button class="skills-btn" id="sk-back-exec">&larr; Executors</button>' +
+    head.innerHTML = '<button class="skills-btn" id="sk-back-exec">' + this._drillBackLabel() + '</button>' +
       '<span class="skills-card-title">' + escapeHtml(row.label) + '</span>' +
       '<span class="skills-tag">' + sk.length + ' skills</span>' +
       (row.readOnly ? '<span class="skills-tag readonly">read-only</span>' : '') +
       '<span style="flex:1"></span><span class="skills-source-dir">' + escapeHtml(row.dir) + '</span>'
     c.innerHTML = ''; c.appendChild(head)
-    head.querySelector('#sk-back-exec').onclick = () => { this.filterExecutor = 'all'; this.searchText=''; this._renderToolbar(); this._renderContent() }
+    head.querySelector('#sk-back-exec').onclick = () => this._backToExecutors()
 
     const g = document.createElement('div'); g.className = 'skills-grid'; g.style.marginTop = '12px'
     this._renderPaged(g, sk, (s) => this._appendExecutorCard(g, row, s))
+    c.appendChild(g)
+  }
+
+  /** Flat grid of every executor's skills — the global-search surface. */
+  _renderAllSkills(c) {
+    const pending = this.executors.some(x => x.dirExists && !Array.isArray(x.skills))
+    if (pending) {
+      c.innerHTML = '<div class="skills-loading"><div class="skills-spinner"></div><div>Loading all executor catalogs…</div></div>'
+      this._ensureCatalog()
+      return
+    }
+    let items = []
+    for (const row of this.executors) {
+      if (!row.dirExists || !Array.isArray(row.skills)) continue
+      if (this.allSourceFilter !== 'all' && row.key !== this.allSourceFilter) continue
+      for (const s of row.skills) items.push({ row, s })
+    }
+    if (this.searchText) {
+      const l = this.searchText.toLowerCase()
+      items = items.filter(it => (it.s.name||'').toLowerCase().includes(l) ||
+        (it.s.description||'').toLowerCase().includes(l) ||
+        (it.s.keywords||[]).some(k => k.toLowerCase().includes(l)))
+    }
+    const filteredByChip = this.allSourceFilter !== 'all'
+      ? ' <span class="skills-tag version">in ' + escapeHtml((this.executors.find(x => x.key === this.allSourceFilter) || {}).label || this.allSourceFilter) + '</span>' : ''
+
+    const head = document.createElement('div')
+    head.style.cssText = 'display:flex;align-items:center;gap:10px'
+    head.innerHTML = '<button class="skills-btn" id="sk-cards">&larr; Executor cards</button>' +
+      '<span class="skills-card-title">All Skills</span>' +
+      '<span class="skills-tag">' + items.length + ' skills</span>' + filteredByChip +
+      '<span style="flex:1"></span>'
+    c.innerHTML = ''; c.appendChild(head)
+    head.querySelector('#sk-cards').onclick = () => { this.executorView = 'cards'; this.searchText = ''; this.allSourceFilter = 'all'; this._renderToolbar(); this._renderContent() }
+    if (!items.length) {
+      const empty = document.createElement('div'); empty.className = 'skills-empty'; empty.style.marginTop = '12px'
+      empty.innerHTML = '<div class="skills-empty-title">' + (this.searchText ? 'No matching skills' : 'No skills found') + '</div>'
+      c.appendChild(empty)
+      return
+    }
+    const g = document.createElement('div'); g.className = 'skills-grid'; g.style.marginTop = '12px'
+    this._renderPaged(g, items, (it) => this._appendExecutorCard(g, it.row, it.s))
     c.appendChild(g)
   }
 
@@ -406,29 +491,14 @@ class SkillsApp {
     grid.appendChild(card)
   }
 
+  /** Executor cards — pure navigation, no skill search here. */
   _renderExecutorOverview(c) {
     if (!this.executors.length && !this.loading) { c.innerHTML = '<div class="skills-empty"><div class="skills-empty-title">No executor directories found on this machine</div></div>'; return }
-    const l = this.searchText.toLowerCase()
-    // Cross-executor search needs full catalogs; fetch them once on demand
-    if (l && this.executors.some(r => r.dirExists && !Array.isArray(r.skills))) {
-      c.innerHTML = '<div class="skills-loading"><div class="skills-spinner"></div><div>Loading executor catalogs…</div></div>'
-      this._ensureCatalog()
-      return
-    }
-    let rows = this.executors
-    if (l) {
-      rows = this.executors
-        .filter(r => r.dirExists)
-        .map(r => ({ row: r, matched: r.skills.filter(s => (s.name||'').toLowerCase().includes(l) || (s.description||'').toLowerCase().includes(l)).length }))
-        .filter(x => x.matched > 0)
-    }
-    if (l && !rows.length) { c.innerHTML = '<div class="skills-empty"><div class="skills-empty-title">No matching skills in any executor</div></div>'; return }
-
-    const visible = l ? rows.map(x => x.row) : rows.filter(r => r.dirExists)
-    const missing = l ? [] : this.executors.filter(r => !r.dirExists)
+    const visible = this.executors.filter(r => r.dirExists)
+    const missing = this.executors.filter(r => !r.dirExists)
     const g = document.createElement('div'); g.className = 'skills-source-grid'
     visible.forEach(x => {
-      const count = l ? x.skills.filter(s => (s.name||'').toLowerCase().includes(l) || (s.description||'').toLowerCase().includes(l)).length : this._execCount(x)
+      const count = this._execCount(x)
       const sizeBit = Array.isArray(x.skills)
         ? ' · total ' + formatSize(x.skills.reduce((a, s) => a + (s.totalSize||0), 0))
         : ''
@@ -547,6 +617,7 @@ class SkillsApp {
 
   _switchTab(mode) {
     this.viewMode = mode; this.searchText = ''; this.filterSource = 'all'; this.activeSource = null; this.filterExecutor = 'all'
+    this.executorView = 'cards'; this.allSourceFilter = 'all'
     this.root.querySelectorAll('.skills-tab').forEach(t => t.classList.toggle('active', t.dataset.t === mode))
     this._renderToolbar(); this._renderContent()
   }
