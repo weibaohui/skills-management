@@ -380,7 +380,19 @@ module.exports = {
   __internals: { extractFrontmatter, parseSkillMd, invocationPolicy, installDirName, isReadOnlySource, EXECUTOR_DEFS },
 
   apply(ctx, config = {}) {
-    const marketDirs = (config.marketDirs !== undefined ? config.marketDirs : DEFAULT_MARKET_DIRS).map((d) => resolve(expandTilde(d)))
+    // Explicit marketDirs config wins; otherwise the scan follows the
+    // runtime-configurable repo dir (<repoDir>/skills) so moving the checkout
+    // in settings switches the market without touching cordis.yml.
+    const configMarketDirs = config.marketDirs !== undefined
+      ? config.marketDirs.map((d) => resolve(expandTilde(d)))
+      : undefined
+    const runtimeRepoDir = { current: undefined }  // set once state loads / on PUT
+    const effectiveRepoDir = () => resolve(expandTilde(
+      runtimeRepoDir.current !== undefined ? runtimeRepoDir.current
+        : config.marketRepoDir !== undefined ? config.marketRepoDir
+        : join(homedir(), '.ntd', 'bundled')))
+    const marketRoots = () => configMarketDirs !== undefined ? configMarketDirs : [join(effectiveRepoDir(), 'skills')]
+    const marketDirs = marketRoots  // scan/install/locate call sites read through this
     const installedDir = resolve(expandTilde(config.installedDir !== undefined ? config.installedDir : process.env.DSH_HOME ? join(process.env.DSH_HOME, 'skills') : join(homedir(), '.dsh', 'skills')))
     const providerName = config.providerName !== undefined ? config.providerName : 'ntd-skills'
 
@@ -418,7 +430,7 @@ module.exports = {
 
     async function discoverAll() {
       const market = [], installed = []
-      for (const root of marketDirs) {
+      for (const root of marketDirs()) {
         for (const entry of await scanRoot(root)) {
           try { market.push(await readSkillEntry(entry)) }
           catch (e) { ctx.logger.warn(`skills-management: skipping ${entry.dir}: ${e && e.message}`) }
@@ -480,7 +492,7 @@ module.exports = {
       }
       try { return { dir: await resolveSkillDir(installedDir, name), executorKey: 'dsh', isInstalled: true } }
       catch { /* fall through to market roots */ }
-      for (const root of marketDirs) {
+      for (const root of marketDirs()) {
         try { return { dir: await resolveSkillDir(root, name), executorKey: null, isInstalled: false } }
         catch (e) { if (!String(e && e.message).includes('not found')) throw e }
       }
@@ -501,7 +513,7 @@ module.exports = {
 
     async function installMarketSkill(fullName, overwrite) {
       let sourceDir
-      for (const root of marketDirs) {
+      for (const root of marketDirs()) {
         try { sourceDir = await resolveSkillDir(root, fullName); break }
         catch (e) { if (!String(e && e.message).includes('not found')) throw e }
       }
@@ -531,13 +543,15 @@ module.exports = {
     }
 
     // ── Market sync state (persisted next to the repo root) ──
-    const marketRepoDir = resolve(expandTilde(config.marketRepoDir !== undefined ? config.marketRepoDir : join(homedir(), '.ntd', 'bundled')))
-    const marketStateFile = join(marketRepoDir, '..', '.dsh-skills-market-sync.json')
+    const marketStateFile = join(resolve(installedDir, '..'), 'skills-market-sync.json')
     let marketState = { settings: {}, lastSyncAt: undefined, lastResult: undefined }
     const marketStateLoaded = fsP.readFile(marketStateFile, 'utf8')
       .then(raw => {
         const parsed = JSON.parse(raw)
         marketState = { settings: parsed.settings || {}, lastSyncAt: parsed.lastSyncAt, lastResult: parsed.lastResult }
+        if (typeof marketState.settings.repoDir === 'string' && marketState.settings.repoDir !== '') {
+          runtimeRepoDir.current = marketState.settings.repoDir
+        }
       })
       .catch(() => {})
     const saveMarketState = async () => {
@@ -556,12 +570,13 @@ module.exports = {
         const ok = await gitAvailable(eff.gitBinary)
         if (!ok) throw new Error('git is not available on PATH')
         const started = Date.now()
-        const result = await gitSyncRepo(eff.gitBinary, eff.url, eff.branch, marketRepoDir, eff.token)
+        const repoDir = effectiveRepoDir()
+        const result = await gitSyncRepo(eff.gitBinary, eff.url, eff.branch, repoDir, eff.token)
         marketState.lastSyncAt = new Date().toISOString()
         marketState.lastResult = { ...result, at: marketState.lastSyncAt, durationMs: Date.now() - started }
         await saveMarketState()
         invalidate()
-        return { ...marketState.lastResult, url: eff.url, branch: eff.branch, dir: marketRepoDir }
+        return { ...marketState.lastResult, url: eff.url, branch: eff.branch, dir: repoDir }
       })().finally(() => { marketSyncRun = null })
       return marketSyncRun
     }
@@ -569,7 +584,7 @@ module.exports = {
     // Startup + periodic auto-sync (fire-and-forget; failures only warn)
     ctx.effect(() => {
       const eff = marketSettings()
-      if (eff.syncOnStartup && marketRepoDir !== undefined) {
+      if (eff.syncOnStartup) {
         marketStateLoaded.then(() => runMarketSync()).catch(e => ctx.logger.warn(`skills-management: startup market sync: ${e && e.message}`))
       }
       const timer = setInterval(() => {
@@ -631,13 +646,14 @@ module.exports = {
           if (req.method === 'GET' && apiPath.endsWith('/skills-management/api/market/status')) {
             await marketStateLoaded
             const eff = marketSettings()
-            const repoExists = await fsP.access(join(marketRepoDir, '.git')).then(() => true).catch(() => false)
+            const repoDir = effectiveRepoDir()
+            const repoExists = await fsP.access(join(repoDir, '.git')).then(() => true).catch(() => false)
             const ok = await gitAvailable(eff.gitBinary)
             const [localCommit, remoteCommit] = repoExists && ok
-              ? [await gitCurrentCommit(eff.gitBinary, marketRepoDir), await gitRemoteCommit(eff.gitBinary, marketRepoDir, 'origin', eff.branch)]
+              ? [await gitCurrentCommit(eff.gitBinary, repoDir), await gitRemoteCommit(eff.gitBinary, repoDir, 'origin', eff.branch)]
               : [undefined, undefined]
             sendJson(res, 200, {
-              url: eff.url, branch: eff.branch, dir: displayPath(marketRepoDir),
+              url: eff.url, branch: eff.branch, dir: displayPath(repoDir),
               gitAvailable: ok, repoExists,
               localCommit, remoteCommit,
               needsUpdate: localCommit !== undefined && remoteCommit !== undefined ? localCommit !== remoteCommit : undefined,
@@ -669,6 +685,10 @@ module.exports = {
             // token: non-empty string sets it; null or '' clears it. Never echoed.
             if (typeof body.token === 'string' && body.token !== '') patch.token = body.token
             if (body.token === null || body.token === '') patch.token = undefined
+            if (typeof body.repoDir === 'string' && body.repoDir !== '') {
+              patch.repoDir = resolve(expandTilde(body.repoDir))
+              runtimeRepoDir.current = patch.repoDir
+            }
             for (const key of ['autoSync', 'syncOnStartup']) {
               if (typeof body[key] === 'boolean') patch[key] = body[key]
             }

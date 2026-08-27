@@ -36,7 +36,7 @@ dsh plugin --profile web add 'github:weibaohui/dsh-plugins#path:skills' -w
 | `executorDirs` | `{}` | 覆盖某执行器来源的根目录，如 `{claudecode: '/path'}`；也便于测试 |
 | `disabledExecutors` | `[]` | 关闭的执行器来源 key 列表 |
 | `extraExecutors` | `[]` | 追加自定义来源：`[{key, label, dir, readOnly}]` |
-| `marketRepoDir` | `~/.ntd/bundled` | 市场资源 git 检出根目录（同步目标） |
+| `marketRepoDir` | `~/.ntd/bundled` | 市场资源 git 检出根目录（同步目标）；运行期可在设置面板改（`PUT /market/settings {repoDir}`），市场扫描自动跟随，状态持久化于 `$DSH_HOME/skills-market-sync.json` |
 | `marketSync` | 见下 | `{url, branch, gitBinary, autoSync, syncOnStartup, token}`；url 默认 `https://gitcode.com/weibaohui/ntd-resource.git`，运行期可经 `PUT /market/settings` 覆盖（持久化于 `<repoDir>/../.dsh-skills-market-sync.json`） |
 
 ## 开发

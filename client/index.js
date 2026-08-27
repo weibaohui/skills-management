@@ -88,6 +88,7 @@ const ZH = {
   save: '保存',
   saved: '设置已保存',
   gitMissing: '未检测到 git',
+  repoDirLabel: '本地目录（同步内容存放处）',
   tokenLabel: '访问令牌（私有仓库需要）',
   tokenConfigured: '已配置',
   clearToken: '清除',
@@ -169,6 +170,7 @@ const EN = {
   save: 'Save',
   saved: 'Settings saved',
   gitMissing: 'git not found',
+  repoDirLabel: 'Local directory (sync target)',
   tokenLabel: 'Access token (private repos)',
   tokenConfigured: 'configured',
   clearToken: 'Clear',
@@ -568,6 +570,7 @@ function MarketSettingsDialog({ t, onClose, onToast, onSynced }) {
   const [url, setUrl] = useState('')
   const [branch, setBranch] = useState('')
   const [token, setToken] = useState('')
+  const [repoDir, setRepoDir] = useState('')
   const [autoSync, setAutoSync] = useState(true)
   const [syncOnStartup, setSyncOnStartup] = useState(true)
 
@@ -575,6 +578,7 @@ function MarketSettingsDialog({ t, onClose, onToast, onSynced }) {
     setStatus(d)
     setUrl(d.url)
     setBranch(d.branch)
+    setRepoDir(d.dir)
     setAutoSync(d.autoSync)
     setSyncOnStartup(d.syncOnStartup)
   }).catch(() => {})
@@ -599,6 +603,7 @@ function MarketSettingsDialog({ t, onClose, onToast, onSynced }) {
   const doSave = async () => {
     try {
       const patch = { url, branch, autoSync, syncOnStartup }
+      if (repoDir !== '' && repoDir !== (status && status.dir)) patch.repoDir = repoDir
       if (token !== '') patch.token = token
       await putSettings(patch)
       setToken('')
@@ -631,7 +636,8 @@ function MarketSettingsDialog({ t, onClose, onToast, onSynced }) {
             status.needsUpdate !== undefined && h('div', { style: { display: 'flex', justifyContent: 'flex-end', marginTop: -6 } },
               status.needsUpdate ? h('span', { className: 'sk-tag accent' }, t('needsUpdateTag')) : null),
             row(t('remoteCommitLabel'), short(status.remoteCommit)),
-            row(t('lastSyncLabel'), status.lastSyncAt ? formatTime(status.lastSyncAt) : t('repoMissing'))),
+            row(t('lastSyncLabel'), status.lastSyncAt ? formatTime(status.lastSyncAt) : t('repoMissing')),
+            row(t('repoDirLabel'), status.dir)),
           h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
             h('label', { style: { display: 'flex', alignItems: 'center', gap: 8, color: 'var(--dsw-alias-label-secondary)', fontSize: 13 } },
               h('input', { type: 'checkbox', checked: autoSync, onChange: e => setAutoSync(e.target.checked) }), t('autoSyncLabel')),
@@ -640,6 +646,7 @@ function MarketSettingsDialog({ t, onClose, onToast, onSynced }) {
           h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
             h('input', { className: 'sk-input', value: url, onChange: e => setUrl(e.target.value), placeholder: t('repoUrlLabel'), style: { width: '100%' } }),
             h('input', { className: 'sk-input', value: branch, onChange: e => setBranch(e.target.value), placeholder: t('branchLabel'), style: { width: '100%' } }),
+            h('input', { className: 'sk-input', value: repoDir, onChange: e => setRepoDir(e.target.value), placeholder: t('repoDirLabel'), style: { width: '100%' } }),
             h('div', { style: { display: 'flex', gap: 6, alignItems: 'center' } },
               h('input', { className: 'sk-input', type: 'password', value: token, onChange: e => setToken(e.target.value),
                 placeholder: status && status.hasToken ? `${t('tokenLabel')} · ${t('tokenConfigured')}` : t('tokenLabel'), style: { flex: 1 } }),

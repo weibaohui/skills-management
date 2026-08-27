@@ -496,3 +496,39 @@ test('market sync clones, then fetches updates from a git remote', async () => {
     await rm(root, { recursive: true, force: true })
   }
 })
+
+test('market repo dir is runtime-configurable and the scan follows it', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-market-dir-'))
+  try {
+    const remote = join(root, 'remote')
+    await makeRemoteRepo(remote, { 'demo-repo/gamma/SKILL.md': '---\nname: gamma\ndescription: g\n---\nG' })
+    const dirA = join(root, 'checkout-a')
+    const dirB = join(root, 'checkout-b')
+
+    // 不传 marketDirs → 扫描根自动跟随 repoDir/skills
+    const env = setupPlugin({
+      installedDir: join(root, 'installed'),
+      marketRepoDir: dirA,
+      marketSync: { url: remote, branch: 'main', syncOnStartup: false, autoSync: false },
+    })
+
+    await env.call('POST', '/skills-management/api/market/sync')
+    let list = await env.call('GET', '/skills-management/api')
+    assert.ok(list.payload.market.some(s => s.name === 'demo-repo/gamma'), 'scans from dirA/skills')
+
+    // 运行期换目录:PUT settings.repoDir → 状态/扫描立即切换,再同步克隆到新目录
+    const put = await env.call('PUT', '/skills-management/api/market/settings', { repoDir: dirB })
+    assert.equal(put.status, 200)
+    const st = await env.call('GET', '/skills-management/api/market/status')
+    assert.equal(st.payload.dir, dirB, 'status follows the new dir')
+    assert.equal(st.payload.repoExists, false, 'new dir not cloned yet')
+
+    await env.call('POST', '/skills-management/api/market/sync')
+    list = await env.call('GET', '/skills-management/api')
+    assert.ok(list.payload.market.some(s => s.name === 'demo-repo/gamma'), 'scans from dirB/skills after switch')
+    const st2 = await env.call('GET', '/skills-management/api/market/status')
+    assert.equal(st2.payload.repoExists, true)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
