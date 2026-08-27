@@ -38,6 +38,8 @@ window.__ModuleLoader__.load({
     // tree structurally testable while every real surface ships primitives.
     let P = null
     try { P = require('@deepseek-ai/dsh-client-ui-primitives') } catch {}
+    let RDP = null
+    try { RDP = require('react-dom') } catch {}
 
     // NOTE: no class components in this module. A `class X extends
     // React.Component` error boundary defined here silently killed rendering in
@@ -211,7 +213,7 @@ window.__ModuleLoader__.load({
 
     const STYLE = `<style>
     .sk-page{position:relative;display:flex;flex-direction:column;gap:14px;color:var(--dsw-alias-label-primary);font-family:var(--dsw-font-family);font-size:var(--dsw-font-sm-14,14px)}
-    .sk-overlay{position:fixed;inset:0;z-index:1000;background:var(--dsw-alias-bg-base);overflow:auto;padding:18px 22px}
+    .sk-overlay{position:fixed;inset:0;z-index:2147483000;background:var(--dsw-alias-bg-base);overflow:auto;padding:20px 26px}
     .sk-tabs{display:flex;gap:6px;border-bottom:1px solid var(--dsw-alias-border-l2);padding-bottom:10px}
     .sk-toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
     .spacer{flex:1}
@@ -773,14 +775,15 @@ window.__ModuleLoader__.load({
       return h('span', { style: { display: 'contents' } },
         h('button', { title: 'Skills Market', onClick: () => panelStore.set(!panelStore.open),
             style: footerStyle() }, '\u{1F3AF} ', props.label || (t ? t('title') : 'Skills Market')),
-        open && P && P.Modal && h(P.Modal, {
-            open: true,
-            onClose: () => panelStore.set(false),
-            title: t ? t('title') : 'Skills Market',
-            closeLabel: t ? t('close') : 'Close',
-            contentClassName: 'sk-modal-page',
-          },
-          h(SkillsPage, { t, embedded: true, onClose: () => panelStore.set(false) })))
+        open && (() => {
+          const page = h(SkillsPage, { t, embedded: false, onClose: () => panelStore.set(false) })
+          // Fullscreen: portal the fixed-position page to <body> so no sidebar
+          // ancestor (transform-containing or otherwise) can clip it.
+          if (RDP && typeof RDP.createPortal === 'function' && typeof document !== 'undefined') {
+            return RDP.createPortal(page, document.body)
+          }
+          return page // fallback: fixed positioning still applies from here
+        })())
     }
 
     /** Settings section slot entry: render the page directly in the host tree. */
