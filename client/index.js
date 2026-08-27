@@ -218,13 +218,36 @@ class SkillsApp {
 
   _renderToolbar() {
     const tb = this.root.querySelector('#sk-toolbar')
+    // The toolbar is rebuilt from scratch often (lazy scans, refreshes).
+    // Preserve focus/selection so typing into the search box survives it.
+    const doc = this.root.ownerDocument
+    const prevActive = doc.activeElement
+    const preserveId = prevActive && tb.contains(prevActive) && prevActive.id ? prevActive.id : null
+    let preservePos = null
+    if (preserveId === 'sk-search') {
+      try { preservePos = prevActive.selectionStart ?? prevActive.value.length } catch { preservePos = prevActive.value.length }
+    } else if (preserveId === 'sk-filter') {
+      preservePos = prevActive.selectedIndex
+    }
+    this._renderToolbarInto(tb)
+    if (preserveId !== null) {
+      const el = tb.querySelector('#' + preserveId)
+      if (el) {
+        el.focus()
+        if (preserveId === 'sk-search') { try { el.setSelectionRange(preservePos, preservePos) } catch {} }
+        else if (preservePos !== null) el.selectedIndex = preservePos
+      }
+    }
+  }
+
+  _renderToolbarInto(tb) {
     if (this.viewMode === 'executors') {
       const opts = this.executors.map(x => '<option value="' + x.key + '">' + x.label + ' (' + this._execCount(x) + ')</option>').join('')
       tb.innerHTML = '<input class="skills-search" placeholder="Search all executor skills..." id="sk-search">' +
-        '<select class="skills-select" id="sk-filter"><option value="all">All Executors (' + this._executorSkillTotal() + ')</option>' + opts + '</select>' +
+        '<select class="skills-select" id="sk-filter"><option value="all"' + (this.filterExecutor === 'all' ? ' selected' : '') + '>All Executors (' + this._executorSkillTotal() + ')</option>' + opts + '</select>' +
         '<div style="flex:1"></div><button class="skills-btn" id="sk-refresh">Refresh</button>'
       tb.querySelector('#sk-search').oninput = (e) => { this.searchText = e.target.value; this._renderContent() }
-      tb.querySelector('#sk-filter').onchange = (e) => { this.filterExecutor = e.target.value; this._renderContent() }
+      tb.querySelector('#sk-filter').onchange = (e) => { this.filterExecutor = e.target.value; this.searchText = ''; this._renderToolbar(); this._renderContent() }
       tb.querySelector('#sk-refresh').onclick = () => this._loadData()
     } else if (this.viewMode === 'sources') {
       tb.innerHTML = '<input class="skills-search" placeholder="Search sources..." id="sk-search">' +
@@ -232,7 +255,7 @@ class SkillsApp {
       tb.querySelector('#sk-search').oninput = (e) => { this.searchText = e.target.value; this._renderContent() }
       tb.querySelector('#sk-refresh').onclick = () => this._loadData()
     } else if (this.viewMode === 'market') {
-      const opts = this.data.sources.map(s => '<option value="' + s.source + '">' + (s.displayName||s.source) + ' (' + s.skills + ')</option>').join('')
+      const opts = this.data.sources.map(s => '<option value="' + s.source + '"' + (this.filterSource === s.source ? ' selected' : '') + '>' + (s.displayName||s.source) + ' (' + s.skills + ')</option>').join('')
       tb.innerHTML = '<input class="skills-search" placeholder="Search skills..." id="sk-search">' +
         '<select class="skills-select" id="sk-filter"><option value="all">All Sources</option>' + opts + '</select>' +
         '<div style="flex:1"></div><button class="skills-btn" id="sk-refresh">Refresh</button>'
