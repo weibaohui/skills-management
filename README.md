@@ -3,7 +3,8 @@
 ntd 技能市场 for DeepSeek Harness：**一个页面管理本机所有技能**。
 
 - **执行器来源**（移植 ntd 来源表）：扫描本机各 coding agent 的 skills 目录（`~/.claude/skills`、`~/.zcode/skills`、`~/.codex/skills`、`~/.agents/skills` 等 16 个），全部展示、可详情、可单文件预览；`agents` 为只读来源；任意执行器技能可一键复制进 DSH 用户库供 `skill` 工具调用。软链布局（各执行器目录 symlink 共享池）完整支持。
-- **市场浏览**：读取 ntd 技能合集目录（默认 `~/.ntd/bundled/skills`，GitHub 开源技能仓库归档树），按来源分组搜索/筛选，安装进用户库。
+- **市场同步**：插件自己管理 ntd-resource 检出（ntd `git_sync` 同构）：首次 `git clone --depth 1`，更新 `fetch + reset --hard`（远程永远赢，本地误删误改自愈）；启动时后台静默同步 + 每日自动同步（可关）；gitcode 私有仓库支持 access token（只写不回读，状态文件 0600 权限，凭证不落 .git/config）。
+- **市场浏览**：读取 ntd 技能合集目录（默认 `~/.ntd/bundled/skills`，GitHub 开源技能仓库归档树），来源卡片/浏览全部/来源钻入三视图，安装进用户库；⚙ 设置面板查看同步状态、立即同步、编辑 url/分支/token/自动同步。
 - 已安装库注册到 dsh 的 SkillRegistry —— 模型直接通过 `skill` 工具按名调用。
 
 ## 安装
@@ -19,7 +20,7 @@ dsh plugin --profile web add 'github:weibaohui/dsh-plugins#path:skills' -w
 - **市场浏览**：递归扫描市场目录，按来源（GitHub 仓库）分组，搜索/筛选；详情看 SKILL.md 全文与文件清单。
 - **安装**：市场技能整目录复制进用户库 `$DSH_HOME/skills/<短名>/`；执行器技能经 `POST /install {name, from:<executor>}` 复制进同一位置；同名覆盖 = 更新（`overwrite`）。装完 `invalidate()`，`skill` 工具目录立即可见。
 - **删除**：`DELETE {name, executor}` 按源删除；缺省 executor 即 DSH 用户库；只读来源（`agents`）拒删，市场目录只读。
-- **HTTP API**：`/skills-management/api` 下 `GET /`（市场+已安装）、`GET /executors`、`GET /detail?name=&executor=`、`GET /file?name=&path=&executor=`、`POST /install`、`DELETE /`。
+- **HTTP API**：`/skills-management/api` 下 `GET /`（市场+已安装）、`GET /executors`、`GET /detail?name=&executor=`、`GET /file?name=&path=&executor=`、`POST /install`、`DELETE /`、`GET /market/status`、`POST /market/sync`、`PUT /market/settings`。
 
 ## 与 ntd 的差异
 
@@ -35,6 +36,8 @@ dsh plugin --profile web add 'github:weibaohui/dsh-plugins#path:skills' -w
 | `executorDirs` | `{}` | 覆盖某执行器来源的根目录，如 `{claudecode: '/path'}`；也便于测试 |
 | `disabledExecutors` | `[]` | 关闭的执行器来源 key 列表 |
 | `extraExecutors` | `[]` | 追加自定义来源：`[{key, label, dir, readOnly}]` |
+| `marketRepoDir` | `~/.ntd/bundled` | 市场资源 git 检出根目录（同步目标） |
+| `marketSync` | 见下 | `{url, branch, gitBinary, autoSync, syncOnStartup, token}`；url 默认 `https://gitcode.com/weibaohui/ntd-resource.git`，运行期可经 `PUT /market/settings` 覆盖（持久化于 `<repoDir>/../.dsh-skills-market-sync.json`） |
 
 ## 开发
 

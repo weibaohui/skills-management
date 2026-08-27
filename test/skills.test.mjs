@@ -26,7 +26,11 @@ function setupPlugin(config) {
     effect: (fn) => fn(),
     logger: { warn: () => {} },
   }
-  plugin.apply(ctx, config)
+  plugin.apply(ctx, {
+    marketRepoDir: join(tmpdir(), 'dsh-skills-market-test-' + Math.random().toString(36).slice(2)),
+    marketSync: { syncOnStartup: false, autoSync: false },
+    ...config,
+  })
   const call = async (method, url, body) => {
     const req = new EventEmitter()
     req.method = method
@@ -406,6 +410,88 @@ test('POST /install with `from` copies an executor skill into the dsh library', 
 
     const invalidName = await env.call('POST', '/skills-management/api/install', { name: '../escape', from: 'claudecode' })
     assert.equal(invalidName.status, 400)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+// ── Market git sync (clone + update, ntd semantics) ──
+
+import { execFile as execFileCb } from 'node:child_process'
+const git = (args, cwd) => new Promise((fulfil, reject) => {
+  execFileCb('git', args, { cwd }, (error, stdout, stderr) => {
+    if (error) reject(new Error(`git ${args.join(' ')}: ${stderr || error.message}`)); else fulfil(stdout)
+  })
+})
+
+async function makeRemoteRepo(dir, skills) {
+  for (const [rel, content] of Object.entries(skills)) {
+    await mkdir(join(dir, 'skills', rel, '..'), { recursive: true })
+    await writeFile(join(dir, 'skills', rel), content)
+  }
+  await git(['init', '-q', '-b', 'main', '.'], dir)
+  await git(['config', 'user.email', 't@t'], dir)
+  await git(['config', 'user.name', 't'], dir)
+  await git(['add', '-A'], dir)
+  await git(['commit', '-qm', 'init'], dir)
+}
+
+test('market sync clones, then fetches updates from a git remote', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-market-sync-'))
+  try {
+    const remote = join(root, 'remote')
+    await makeRemoteRepo(remote, { 'demo-repo/alpha/SKILL.md': '---\nname: alpha\ndescription: first\n---\nA' })
+    const local = join(root, 'local')
+
+    const env = setupPlugin({
+      marketDirs: [join(local, 'skills')],
+      installedDir: join(root, 'installed'),
+      marketRepoDir: local,
+      marketSync: { url: remote, branch: 'main', syncOnStartup: false, autoSync: false },
+    })
+
+    // 首次同步 = 克隆
+    const first = await env.call('POST', '/skills-management/api/market/sync')
+    assert.equal(first.status, 200)
+    assert.equal(first.payload.isFirstClone, true)
+    assert.equal(first.payload.hasUpdates, true)
+
+    // 状态:仓库在、无 token、无待更新
+    const st1 = await env.call('GET', '/skills-management/api/market/status')
+    assert.equal(st1.status, 200)
+    assert.equal(st1.payload.repoExists, true)
+    assert.equal(st1.payload.hasToken, false)
+    assert.equal(st1.payload.needsUpdate, false)
+    assert.ok(st1.payload.localCommit)
+
+    // 市场列表可见克隆下来的技能
+    const list1 = await env.call('GET', '/skills-management/api')
+    assert.ok(list1.payload.market.some(s => s.name === 'demo-repo/alpha'))
+
+    // 远端新增一个技能 → 同步 = fetch + reset
+    await mkdir(join(remote, 'skills', 'demo-repo', 'beta'), { recursive: true })
+    await writeFile(join(remote, 'skills', 'demo-repo', 'beta', 'SKILL.md'), '---\nname: beta\ndescription: second\n---\nB')
+    await git(['add', '-A'], remote)
+    await git(['commit', '-qm', 'add beta'], remote)
+    const second = await env.call('POST', '/skills-management/api/market/sync')
+    assert.equal(second.status, 200)
+    assert.equal(second.payload.isFirstClone, false)
+    assert.equal(second.payload.hasUpdates, true)
+
+    const list2 = await env.call('GET', '/skills-management/api')
+    assert.ok(list2.payload.market.some(s => s.name === 'demo-repo/beta'))
+
+    // 设置:token 只写不回读;状态只给 hasToken
+    const put = await env.call('PUT', '/skills-management/api/market/settings', { token: 'secret-token', branch: 'main' })
+    assert.equal(put.status, 200)
+    assert.equal(put.payload.settings.token, undefined)
+    assert.equal(put.payload.settings.branch, 'main')
+    const st2 = await env.call('GET', '/skills-management/api/market/status')
+    assert.equal(st2.payload.hasToken, true)
+    // 清除
+    await env.call('PUT', '/skills-management/api/market/settings', { token: null })
+    const st3 = await env.call('GET', '/skills-management/api/market/status')
+    assert.equal(st3.payload.hasToken, false)
   } finally {
     await rm(root, { recursive: true, force: true })
   }

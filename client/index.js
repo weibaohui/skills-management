@@ -71,6 +71,27 @@ const ZH = {
   cardsHint: '选择一个执行器浏览它的技能，或一次查看全部',
   marketCardsHint: '选择一个来源仓库浏览其技能，或一次查看全部',
   marketLoading: '正在加载市场目录…',
+  marketSettings: '市场设置',
+  syncNow: '立即同步',
+  syncing: '同步中，可能需要一分钟…',
+  syncDoneUpdated: '同步完成，市场已更新',
+  syncDoneLatest: '已是最新版本',
+  firstCloneDone: '首次克隆完成',
+  repoUrlLabel: '仓库地址',
+  branchLabel: '分支',
+  lastSyncLabel: '上次同步',
+  localCommitLabel: '本地版本',
+  remoteCommitLabel: '远程版本',
+  needsUpdateTag: '有更新',
+  autoSyncLabel: '每天自动同步',
+  syncOnStartupLabel: '启动时同步',
+  save: '保存',
+  saved: '设置已保存',
+  gitMissing: '未检测到 git',
+  tokenLabel: '访问令牌（私有仓库需要）',
+  tokenConfigured: '已配置',
+  clearToken: '清除',
+  repoMissing: '尚未克隆，点「立即同步」拉取',
   backSources: '← 按来源',
   backMarketCards: '← 来源卡片',
   allMarketTitle: '全部市场技能',
@@ -131,6 +152,27 @@ const EN = {
   cardsHint: 'Pick an executor to browse its skills, or view everything at once',
   marketCardsHint: 'Pick a source repo to browse its skills, or view everything at once',
   marketLoading: 'Loading market catalog…',
+  marketSettings: 'Market Settings',
+  syncNow: 'Sync now',
+  syncing: 'Syncing, may take a minute…',
+  syncDoneUpdated: 'Synced, market updated',
+  syncDoneLatest: 'Already up to date',
+  firstCloneDone: 'Initial clone complete',
+  repoUrlLabel: 'Repository URL',
+  branchLabel: 'Branch',
+  lastSyncLabel: 'Last sync',
+  localCommitLabel: 'Local commit',
+  remoteCommitLabel: 'Remote commit',
+  needsUpdateTag: 'Updates available',
+  autoSyncLabel: 'Auto sync daily',
+  syncOnStartupLabel: 'Sync on startup',
+  save: 'Save',
+  saved: 'Settings saved',
+  gitMissing: 'git not found',
+  tokenLabel: 'Access token (private repos)',
+  tokenConfigured: 'configured',
+  clearToken: 'Clear',
+  repoMissing: 'Not cloned yet — hit Sync now',
   backSources: '← By source',
   backMarketCards: '← Source cards',
   allMarketTitle: 'All Market Skills',
@@ -519,6 +561,94 @@ function InToast({ text }) {
   return h('div', { className: 'sk-toast' }, text)
 }
 
+/** Market sync settings: status card, sync action, editable url/branch. */
+function MarketSettingsDialog({ t, onClose, onToast, onSynced }) {
+  const [status, setStatus] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [url, setUrl] = useState('')
+  const [branch, setBranch] = useState('')
+  const [token, setToken] = useState('')
+  const [autoSync, setAutoSync] = useState(true)
+  const [syncOnStartup, setSyncOnStartup] = useState(true)
+
+  const refresh = () => getJson(API + '/market/status').then(d => {
+    setStatus(d)
+    setUrl(d.url)
+    setBranch(d.branch)
+    setAutoSync(d.autoSync)
+    setSyncOnStartup(d.syncOnStartup)
+  }).catch(() => {})
+  useEffect(() => { refresh() }, [])
+
+  const doSync = async () => {
+    setBusy(true)
+    try {
+      const r = await fetch(API + '/market/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      const d = await r.json().catch(() => ({}))
+      if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status)
+      onToast(d.isFirstClone ? t('firstCloneDone') : d.hasUpdates ? t('syncDoneUpdated') : t('syncDoneLatest'))
+      onSynced && onSynced()
+      refresh()
+    } catch (e) { onToast(t('operationFailed') + ': ' + e.message) } finally { setBusy(false) }
+  }
+  const putSettings = async (patch) => {
+    const r = await fetch(API + '/market/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) })
+    if (!r.ok) throw new Error('HTTP ' + r.status)
+    return r.json().catch(() => ({}))
+  }
+  const doSave = async () => {
+    try {
+      const patch = { url, branch, autoSync, syncOnStartup }
+      if (token !== '') patch.token = token
+      await putSettings(patch)
+      setToken('')
+      onToast(t('saved'))
+      refresh()
+    } catch (e) { onToast(t('operationFailed') + ': ' + e.message) }
+  }
+  const doClearToken = async () => {
+    try {
+      await putSettings({ token: null })
+      onToast(t('saved'))
+      refresh()
+    } catch (e) { onToast(t('operationFailed') + ': ' + e.message) }
+  }
+
+  const short = (c) => (c ? String(c).slice(0, 8) : '-')
+  const row = (label, value) => h('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 12, padding: '3px 0' } },
+    h('span', { className: 'sk-dir' }, label), h('span', { className: 'sk-hint', style: { wordBreak: 'break-all', textAlign: 'right' } }, value))
+
+  return h(SkDialog, { title: t('marketSettings'), onClose },
+    h('div', { style: { minWidth: 380, display: 'flex', flexDirection: 'column', gap: 10 } },
+      status === null
+        ? h(Spinner, { label: '…' })
+        : [
+          status.gitAvailable === false && h('div', { className: 'sk-tag danger' }, t('gitMissing')),
+          h('div', null,
+            row(t('repoUrlLabel'), status.url),
+            row(t('branchLabel'), status.branch),
+            row(t('localCommitLabel'), short(status.localCommit) + (status.needsUpdate ? ' · ' : '')),
+            status.needsUpdate !== undefined && h('div', { style: { display: 'flex', justifyContent: 'flex-end', marginTop: -6 } },
+              status.needsUpdate ? h('span', { className: 'sk-tag accent' }, t('needsUpdateTag')) : null),
+            row(t('remoteCommitLabel'), short(status.remoteCommit)),
+            row(t('lastSyncLabel'), status.lastSyncAt ? formatTime(status.lastSyncAt) : t('repoMissing'))),
+          h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+            h('label', { style: { display: 'flex', alignItems: 'center', gap: 8, color: 'var(--dsw-alias-label-secondary)', fontSize: 13 } },
+              h('input', { type: 'checkbox', checked: autoSync, onChange: e => setAutoSync(e.target.checked) }), t('autoSyncLabel')),
+            h('label', { style: { display: 'flex', alignItems: 'center', gap: 8, color: 'var(--dsw-alias-label-secondary)', fontSize: 13 } },
+              h('input', { type: 'checkbox', checked: syncOnStartup, onChange: e => setSyncOnStartup(e.target.checked) }), t('syncOnStartupLabel'))),
+          h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+            h('input', { className: 'sk-input', value: url, onChange: e => setUrl(e.target.value), placeholder: t('repoUrlLabel'), style: { width: '100%' } }),
+            h('input', { className: 'sk-input', value: branch, onChange: e => setBranch(e.target.value), placeholder: t('branchLabel'), style: { width: '100%' } }),
+            h('div', { style: { display: 'flex', gap: 6, alignItems: 'center' } },
+              h('input', { className: 'sk-input', type: 'password', value: token, onChange: e => setToken(e.target.value),
+                placeholder: status && status.hasToken ? `${t('tokenLabel')} · ${t('tokenConfigured')}` : t('tokenLabel'), style: { flex: 1 } }),
+              status && status.hasToken && h(ButtonLite, { onClick: doClearToken }, t('clearToken')))),
+          h('div', { className: 'sk-dlg-foot', style: { marginTop: 4 } },
+            h(ButtonLite, { onClick: doSave }, t('save')),
+            h(ButtonLite, { primary: true, onClick: doSync }, busy ? t('syncing') : t('syncNow')))]))
+}
+
 /** Incremental grid: renders the first pageSize cards and grows on demand —
  *  the market collection alone holds 6k+ skills and must not mount at once.
  *  Key the element by the active filter so filtering resets the window. */
@@ -626,6 +756,8 @@ function SkillsPage({ t, onClose, embedded }) {
   const [executorView, setExecutorView] = useState('cards')
   const [filterExecutor, setFilterExecutor] = useState('all')
   const [sourceFilter, setSourceFilter] = useState('all')
+  const [marketSettingsOpen, setMarketSettingsOpen] = useState(false)
+  const [marketToast, setMarketToast] = useState(null)
   const [marketView, setMarketView] = useState('cards')
   const [marketDrill, setMarketDrill] = useState(null)
   const [searchMarketDrill, setSearchMarketDrill] = useState('')
@@ -779,7 +911,9 @@ function SkillsPage({ t, onClose, embedded }) {
         h('div', { className: 'sk-toolbar' },
           h('span', { className: 'sk-hint' }, t('marketCardsHint')),
           h('span', { className: 'spacer' }),
-          h(ButtonLite, { primary: true, onClick: () => setMarketView('all') }, `${t('browseAllMarket')} (${allMarket.length})`)),
+          h(ButtonLite, { primary: true, onClick: () => setMarketView('all') }, `${t('browseAllMarket')} (${allMarket.length})`),
+          h('span', { style: { width: 6 } }),
+          h(ButtonLite, { onClick: () => setMarketSettingsOpen(true), title: t('marketSettings') }, '\u2699')),
         base.sources.length
           ? h('div', { className: 'sk-src' }, base.sources.map(src =>
               h('div', { key: src.source, className: 'sk-card', role: 'button', tabIndex: 0,
@@ -812,6 +946,13 @@ function SkillsPage({ t, onClose, embedded }) {
       onClose: () => setSel(null),
       onInstalled: () => { setSel(null); reloadExecutors(); setBaseStale(true) },
       onDeleted: () => { setSel(null); reloadExecutors(); setBaseStale(true) } }),
+    marketSettingsOpen && h(MarketSettingsDialog, {
+      t,
+      onClose: () => setMarketSettingsOpen(false),
+      onToast: (text) => { setMarketToast(text); setTimeout(() => setMarketToast(null), 3000) },
+      onSynced: () => { setBaseStale(true) },
+    }),
+    marketToast && h(InToast, { text: marketToast }),
     pendingInstall && h(SkDialog, {
       title: t('installTitle'),
       onClose: () => setPendingInstall(null),

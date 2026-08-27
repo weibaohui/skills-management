@@ -14,6 +14,7 @@
  */
 
 const { createReadStream } = require('node:fs')
+const { execFile } = require('node:child_process')
 const fsP = require('node:fs/promises')
 const { basename, join, relative, resolve, sep } = require('node:path')
 const { homedir } = require('node:os')
@@ -297,6 +298,76 @@ function expandTilde(p) {
   return p === '~' || p.startsWith('~/') || p.startsWith('~\\') ? join(homedir(), p.slice(2)) : p
 }
 
+// ── Market git sync (ntd git_sync semantics: clone --depth 1 first, then
+// fetch + reset --hard so the remote always wins and local damage heals) ──
+
+function gitExec(binary, args, cwd) {
+  return new Promise((fulfil, reject) => {
+    execFile(binary, args, { cwd, timeout: 10 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) {
+        const tail = String(stderr || error.message || '').split(/\r?\n/).filter(Boolean).slice(-3).join(' ')
+        reject(new Error(`git ${args[0]}: ${tail || error.message}`))
+        return
+      }
+      fulfil(String(stdout).trim())
+    })
+  })
+}
+
+async function gitAvailable(binary) {
+  try { await gitExec(binary, ['--version']); return true } catch { return false }
+}
+
+async function gitCurrentCommit(binary, repo) {
+  try { return await gitExec(binary, ['rev-parse', 'HEAD'], repo) } catch { return undefined }
+}
+
+async function gitRemoteCommit(binary, repo, remote, branch) {
+  try {
+    const out = await gitExec(binary, ['ls-remote', '--heads', remote, branch], repo)
+    return out.split(/\s+/)[0] || undefined
+  } catch { return undefined }
+}
+
+/** Embed an access token in an https remote URL (gitcode/oauth2 style).
+ *  Credentials stay out of .git/config — every remote-touching command
+ *  receives the authed URL directly and nothing is persisted. */
+function authedUrl(url, token) {
+  if (!token) return url
+  return String(url).replace(/^(https?:\/\/)([^@/]+@)?/, `$1oauth2:${encodeURIComponent(token)}@`)
+}
+
+/** Clone (first time) or fetch+reset (update); remote branch is truth. */
+async function gitSyncRepo(binary, url, branch, repoDir, token) {
+  const remote = authedUrl(url, token)
+  let repoExists = false
+  try { await fsP.access(join(repoDir, '.git')); repoExists = true } catch { repoExists = false }
+  if (!repoExists) {
+    await fsP.rm(repoDir, { recursive: true, force: true })
+    await fsP.mkdir(join(repoDir, '..'), { recursive: true })
+    await gitExec(binary, ['clone', '-b', branch, '--depth', '1', remote, repoDir])
+    return { isFirstClone: true, hasUpdates: true, before: undefined, after: await gitCurrentCommit(binary, repoDir) }
+  }
+  const before = await gitCurrentCommit(binary, repoDir)
+  await gitExec(binary, ['fetch', remote, branch], repoDir)
+  await gitExec(binary, ['reset', '--hard', 'FETCH_HEAD'], repoDir)
+  const after = await gitCurrentCommit(binary, repoDir)
+  return { isFirstClone: false, hasUpdates: before !== after, before, after }
+}
+
+const DEFAULT_MARKET_SYNC = {
+  url: 'https://gitcode.com/weibaohui/ntd-resource.git',
+  branch: 'main',
+  gitBinary: 'git',
+  autoSync: true,        // periodic: sync when lastSyncAt is older than a day
+  syncOnStartup: true,
+}
+
+function mergeMarketSync(config, state) {
+  const cfg = (config && config.marketSync && typeof config.marketSync === 'object') ? config.marketSync : {}
+  return { ...DEFAULT_MARKET_SYNC, ...cfg, ...(state && state.settings ? state.settings : {}) }
+}
+
 function contentTypeFor(p) {
   const ext = p.slice(p.lastIndexOf('.') + 1).toLowerCase()
   const map = { md: 'text/markdown; charset=utf-8', txt: 'text/plain; charset=utf-8', json: 'application/json; charset=utf-8', js: 'text/javascript', mjs: 'text/javascript', ts: 'text/typescript', tsx: 'text/typescript', css: 'text/css', html: 'text/html', svg: 'image/svg+xml', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', yaml: 'text/yaml', yml: 'text/yaml' }
@@ -459,6 +530,61 @@ module.exports = {
       return { removed: name, executor: key }
     }
 
+    // ── Market sync state (persisted next to the repo root) ──
+    const marketRepoDir = resolve(expandTilde(config.marketRepoDir !== undefined ? config.marketRepoDir : join(homedir(), '.ntd', 'bundled')))
+    const marketStateFile = join(marketRepoDir, '..', '.dsh-skills-market-sync.json')
+    let marketState = { settings: {}, lastSyncAt: undefined, lastResult: undefined }
+    const marketStateLoaded = fsP.readFile(marketStateFile, 'utf8')
+      .then(raw => {
+        const parsed = JSON.parse(raw)
+        marketState = { settings: parsed.settings || {}, lastSyncAt: parsed.lastSyncAt, lastResult: parsed.lastResult }
+      })
+      .catch(() => {})
+    const saveMarketState = async () => {
+      // 0600: the state file may carry the access token
+      try { await fsP.writeFile(marketStateFile, JSON.stringify(marketState, null, 2), { mode: 0o600 }) } catch {}
+      try { await fsP.chmod(marketStateFile, 0o600) } catch {}
+    }
+    const marketSettings = () => mergeMarketSync(config, marketState)
+
+    let marketSyncRun = null
+    const runMarketSync = async () => {
+      if (marketSyncRun !== null) return marketSyncRun
+      marketSyncRun = (async () => {
+        await marketStateLoaded
+        const eff = marketSettings()
+        const ok = await gitAvailable(eff.gitBinary)
+        if (!ok) throw new Error('git is not available on PATH')
+        const started = Date.now()
+        const result = await gitSyncRepo(eff.gitBinary, eff.url, eff.branch, marketRepoDir, eff.token)
+        marketState.lastSyncAt = new Date().toISOString()
+        marketState.lastResult = { ...result, at: marketState.lastSyncAt, durationMs: Date.now() - started }
+        await saveMarketState()
+        invalidate()
+        return { ...marketState.lastResult, url: eff.url, branch: eff.branch, dir: marketRepoDir }
+      })().finally(() => { marketSyncRun = null })
+      return marketSyncRun
+    }
+
+    // Startup + periodic auto-sync (fire-and-forget; failures only warn)
+    ctx.effect(() => {
+      const eff = marketSettings()
+      if (eff.syncOnStartup && marketRepoDir !== undefined) {
+        marketStateLoaded.then(() => runMarketSync()).catch(e => ctx.logger.warn(`skills-management: startup market sync: ${e && e.message}`))
+      }
+      const timer = setInterval(() => {
+        const now = Date.now()
+        const eff2 = marketSettings()
+        if (!eff2.autoSync) return
+        const last = marketState.lastSyncAt ? Date.parse(marketState.lastSyncAt) : 0
+        if (now - last > 24 * 3600 * 1000) {
+          runMarketSync().catch(e => ctx.logger.warn(`skills-management: auto market sync: ${e && e.message}`))
+        }
+      }, 6 * 3600 * 1000)
+      if (typeof timer.unref === 'function') timer.unref()
+      return () => clearInterval(timer)
+    }, 'skills-management: market auto-sync')
+
     let providerControl
     const invalidate = () => { if (providerControl !== undefined) providerControl.invalidate() }
 
@@ -500,6 +626,59 @@ module.exports = {
           const url = new URL(req.url || '/', 'http://dsh.local')
           const apiPath = url.pathname.replace(/\/+$/, '')
           const query = url.searchParams
+
+          // GET /skills-management/api/market/status
+          if (req.method === 'GET' && apiPath.endsWith('/skills-management/api/market/status')) {
+            await marketStateLoaded
+            const eff = marketSettings()
+            const repoExists = await fsP.access(join(marketRepoDir, '.git')).then(() => true).catch(() => false)
+            const ok = await gitAvailable(eff.gitBinary)
+            const [localCommit, remoteCommit] = repoExists && ok
+              ? [await gitCurrentCommit(eff.gitBinary, marketRepoDir), await gitRemoteCommit(eff.gitBinary, marketRepoDir, 'origin', eff.branch)]
+              : [undefined, undefined]
+            sendJson(res, 200, {
+              url: eff.url, branch: eff.branch, dir: displayPath(marketRepoDir),
+              gitAvailable: ok, repoExists,
+              localCommit, remoteCommit,
+              needsUpdate: localCommit !== undefined && remoteCommit !== undefined ? localCommit !== remoteCommit : undefined,
+              lastSyncAt: marketState.lastSyncAt, lastResult: marketState.lastResult,
+              autoSync: eff.autoSync, syncOnStartup: eff.syncOnStartup,
+              hasToken: typeof eff.token === 'string' && eff.token !== '',
+              syncing: marketSyncRun !== null,
+            })
+            return
+          }
+
+          // POST /skills-management/api/market/sync
+          if (req.method === 'POST' && apiPath.endsWith('/skills-management/api/market/sync')) {
+            try {
+              const result = await runMarketSync()
+              sendJson(res, 200, result)
+            } catch (e) { sendJson(res, 400, { error: String(e && e.message || e) }) }
+            return
+          }
+
+          // PUT /skills-management/api/market/settings {url?, branch?, autoSync?, syncOnStartup?}
+          if (req.method === 'PUT' && apiPath.endsWith('/skills-management/api/market/settings')) {
+            await marketStateLoaded
+            const body = await readJsonBody(req)
+            const patch = {}
+            for (const key of ['url', 'branch', 'gitBinary']) {
+              if (typeof body[key] === 'string' && body[key] !== '') patch[key] = body[key]
+            }
+            // token: non-empty string sets it; null or '' clears it. Never echoed.
+            if (typeof body.token === 'string' && body.token !== '') patch.token = body.token
+            if (body.token === null || body.token === '') patch.token = undefined
+            for (const key of ['autoSync', 'syncOnStartup']) {
+              if (typeof body[key] === 'boolean') patch[key] = body[key]
+            }
+            marketState.settings = { ...marketState.settings, ...patch }
+            await saveMarketState()
+            const eff = marketSettings()
+            const { token, ...safe } = eff  // token 只写不回读
+            sendJson(res, 200, { settings: safe, hasToken: typeof token === 'string' && token !== '' })
+            return
+          }
 
           // GET /skills-management/api/executors → on-machine sources.
           // Variants: ?mode=summary (counts only, no skill arrays) and
