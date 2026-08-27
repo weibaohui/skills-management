@@ -92,6 +92,11 @@ const STYLE = `<style>
 .skills-tab:hover{color:#1a1a1a}
 .skills-tab.active{color:#1890ff;border-bottom-color:#1890ff;font-weight:600}
 .skills-toolbar{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+/* explicit colors: the host app is dark-themed and its global rules would
+   otherwise paint our white-surface controls light-on-light (invisible) */
+.skills-search,.skills-select,.skills-btn{color:#1a1a1a}
+.skills-search::placeholder{color:#9aa0a6}
+.skills-select option{color:#1a1a1a;background:#fff}
 .skills-search{flex:1;min-width:240px;min-height:44px;padding:8px 14px;border-radius:8px;border:1px solid #e5e5e5;background:#fff;font-size:14px;outline:none}
 .skills-select{min-height:44px;padding:8px 12px;border-radius:8px;border:1px solid #e5e5e5;background:#fff;font-size:14px;max-width:260px}
 .skills-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}
