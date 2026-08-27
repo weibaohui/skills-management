@@ -78,7 +78,6 @@ window.__ModuleLoader__.load({
       tabExecutors: '执行器',
       tabMarket: '市场',
       tabSources: '来源',
-      tabInstalled: '已安装',
       cardsHint: '选择一个执行器浏览它的技能，或一次查看全部',
       marketCardsHint: '选择一个来源仓库浏览其技能，或一次查看全部',
       marketLoading: '正在加载市场目录…',
@@ -138,7 +137,6 @@ window.__ModuleLoader__.load({
       tabExecutors: 'Executors',
       tabMarket: 'Market',
       tabSources: 'Sources',
-      tabInstalled: 'Installed',
       cardsHint: 'Pick an executor to browse its skills, or view everything at once',
       marketCardsHint: 'Pick a source repo to browse its skills, or view everything at once',
       marketLoading: 'Loading market catalog…',
@@ -624,7 +622,6 @@ window.__ModuleLoader__.load({
       const [searchExec, setSearchExec] = useState('')
       const [searchDrill, setSearchDrill] = useState('')
       const [searchAll, setSearchAll] = useState('')
-      const [searchInstalled, setSearchInstalled] = useState('')
       const [sel, setSel] = useState(null)
       const [tick, forceTick] = useState(0)
       const rootRef = useRef(null)
@@ -645,7 +642,7 @@ window.__ModuleLoader__.load({
       }
       useEffect(reloadExecutors, [])
       useEffect(() => {
-        if (['market', 'installed'].includes(tab) && baseStale) reloadBase()
+        if (tab === 'market' && baseStale) reloadBase()
       }, [tab, baseStale])
 
       // Load full lists for one executor on demand
@@ -723,23 +720,6 @@ window.__ModuleLoader__.load({
             onEnter: key => { setFilterExecutor(key); setSearchDrill('') },
             onBrowseAll: () => setExecutorView('all') })
         }
-      } else if (tab === 'installed') {
-        const list = base.installed.filter(s => !searchInstalled ||
-          matchSkill({ name: s.name, description: s.description }, searchInstalled.toLowerCase()))
-        body = [
-          h('div', { className: 'sk-toolbar' },
-            h(InputBox, { value: searchInstalled, placeholder: t('searchAll'), onSearch: setSearchInstalled })),
-          list.length
-            ? h('div', { className: 'sk-list' }, list.map(s =>
-                h('div', { key: s.name, className: 'sk-card' },
-                  h('div', { style: { minWidth: 0 } },
-                    h('div', { className: 'sk-title' }, s.name),
-                    h('div', { className: 'sk-dir' }, `${s.fileCount} · ${formatSize(s.totalSize)} · ${formatTime(s.modifiedAt)}`)),
-                  h('div', { className: 'sk-rowbtns' },
-                    h(ButtonLite, { small: true, onClick: () => openDetail({ name: s.name }, 'dsh') }, t('detail')),
-                    h(ButtonLite, { danger: true, small: true, onClick: () => setPendingDelete({ executor: 'dsh', name: s.name }) }, t('deleteBtn'))))))
-            : h(Empty, null, t('emptySkillsIn', { label: t('tabInstalled') }))]
-
       } else {
         // Market tab mirrors the executors tab: source cards by default, a flat
         // all-skills view on demand, and per-source drill-in with a scoped filter.
@@ -811,7 +791,7 @@ window.__ModuleLoader__.load({
           h('span', { className: 'sk-title', style: { fontSize: 16 } }, t('title')),
           h('span', { className: 'spacer' }),
           h(ButtonLite, { onClick: () => onClose && onClose() }, t('close'))),
-        h('div', { className: 'sk-tabs' }, ['executors', 'market', 'installed'].map(key =>
+        h('div', { className: 'sk-tabs' }, ['executors', 'market'].map(key =>
           h('button', { key, className: 'sk-tabpill' + (tab === key ? ' on' : ''), style: pillStyle(tab === key),
             onClick: () => { setTab(key); setFilterExecutor('all'); setExecutorView('cards'); setSearchExec(''); setSearchDrill(''); setSearchAll(''); setMarketView('cards'); setMarketDrill(null); setSearchMarketDrill(''); setSearchMarketAll('') } }, t('tab' + key[0].toUpperCase() + key.slice(1))))),
         h('div', null, body),
