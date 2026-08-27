@@ -39,24 +39,11 @@ window.__ModuleLoader__.load({
     let P = null
     try { P = require('@deepseek-ai/dsh-client-ui-primitives') } catch {}
 
-    // Render error boundary: surfaces mount-time crashes on screen (and into
-    // window.__skErrors) instead of leaving a blank overlay behind.
-    const BoundaryBase = (typeof __React === 'object' && __React && __React.Component) ? __React.Component : class {}
-    class SkBoundary extends BoundaryBase {
-      constructor(props) { super(props); this.state = { err: null } }
-      static getDerivedStateFromError(err) { return { err } }
-      componentDidCatch(err) {
-        ;(globalThis.__skErrors = globalThis.__skErrors || []).push('render: ' + (err && (err.stack || err.message) || String(err)))
-        if (typeof this.props.onCrash === 'function') setTimeout(this.props.onCrash, 0)
-      }
-      render() {
-        if (this.state.err) {
-          return h('div', { className: 'sk-empty', style: { margin: 20, color: 'var(--dsw-alias-state-error-primary)' } },
-            '⚠️ ' + ((this.state.err && this.state.err.message) || String(this.state.err)))
-        }
-        return this.props.children
-      }
-    }
+    // NOTE: no class components in this module. A `class X extends
+    // React.Component` error boundary defined here silently killed rendering in
+    // the plugin loader (components before it rendered, it never instantiated,
+    // zero errors) — render-time crashes are handled by the try/catch inside
+    // SkillsPage and recorded into globalThis.__skErrors instead.
 
     /** Idempotent stylesheet injection — the overlay/tab/card classes are
      *  position-critical (.sk-overlay is position:fixed) so mounting without
@@ -623,6 +610,7 @@ window.__ModuleLoader__.load({
       }
 
       let body = null
+      try {
       if (tab === 'executors') {
         if (filterExecutor !== 'all') {
           body = h(DrillInView, { row, searchText: searchDrill, t,
@@ -689,6 +677,12 @@ window.__ModuleLoader__.load({
                     onDelete: () => {} })))
               : h(Empty, null, t('emptySearch')),
           ]
+        }
+      }
+      } catch (renderErr) {
+        ;(globalThis.__skErrors = globalThis.__skErrors || []).push('body: ' + (renderErr && renderErr.message))
+        body = h('div', { className: 'sk-empty', style: { color: 'var(--dsw-alias-state-error-primary)' } },
+          '\u26A0\uFE0F ' + String((renderErr && renderErr.message) || renderErr))
       }
 
       return h('div', { className: 'sk-page' + (embedded ? '' : ' sk-overlay'), ref: rootRef },
@@ -714,10 +708,8 @@ window.__ModuleLoader__.load({
             h(ButtonLite, { primary: true, danger: true, onClick: doPendingDelete }, t('deleteBtn'))),
         }, null))
       }
-    }
 
-    function SourceFilterStatic({ sources, value, onChange }) {
-      return h('select', { value, onChange: e => onChange(e.target.value),
+    function SourceFilterStatic({ sources, value, onChange }) {  return h('select', { value, onChange: e => onChange(e.target.value),
           style: selectStyle() },
         h('option', { value: 'all' }, 'All Sources'),
         sources.map(s => h('option', { key: s.source, value: s.source }, (s.displayName || s.source) + ` (${s.skills})`)))
@@ -776,6 +768,7 @@ window.__ModuleLoader__.load({
     function FooterSlotComponent(props) {
       const [open, setOpen] = useState(panelStore.open)
       useEffect(() => panelStore.subscribe(setOpen), [])
+      useEffect(ensureStyles, [])
       const t = props.__t
       return h('span', { style: { display: 'contents' } },
         h('button', { title: 'Skills Market', onClick: () => panelStore.set(!panelStore.open),
@@ -787,13 +780,13 @@ window.__ModuleLoader__.load({
             closeLabel: t ? t('close') : 'Close',
             contentClassName: 'sk-modal-page',
           },
-          h(SkBoundary, null, h(SkillsPage, { t, embedded: true, onClose: () => panelStore.set(false) }))))
+          h(SkillsPage, { t, embedded: true, onClose: () => panelStore.set(false) })))
     }
 
     /** Settings section slot entry: render the page directly in the host tree. */
     function SettingsSlotComponent(props) {
       useEffect(ensureStyles, [])
-      return h(SkBoundary, null, h(SkillsPage, { t: props.__t, embedded: true }))
+      return h(SkillsPage, { t: props.__t, embedded: true })
     }
 
     // ── Plugin plane contract ────────────────────────────────────────────────
@@ -816,7 +809,7 @@ window.__ModuleLoader__.load({
           if (!opts.t && globalThis.document && !(container.ownerDocument !== document)) { /* noop */ }
         } catch {}
         const root = require('react-dom/client').createRoot(container)
-        root.render(h(SkBoundary, null, h(SkillsPage, { t, embedded: !!opts.embedded })))
+        root.render(h(SkillsPage, { t, embedded: !!opts.embedded }))
         return root
       },
       apply(ctx) {
