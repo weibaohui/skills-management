@@ -147,7 +147,9 @@ const STYLE = `<style>
 .skills-list-item{display:flex;align-items:center;gap:12px;padding:14px 16px;border-radius:10px;border:1px solid #e5e5e5;background:#fff}
 .skills-list-name{font-size:14px;font-weight:600;color:#1a1a1a;flex:1}
 .skills-list-meta{font-size:12px;color:#666}
-.skills-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:999;opacity:0;transition:opacity .2s}
+/* pointer-events guards: the closed backdrop must never block page clicks */
+.skills-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:999;opacity:0;transition:opacity .2s;pointer-events:none}
+.skills-backdrop.visible{opacity:1;pointer-events:auto}
 .skills-backdrop.visible{opacity:1}
 .skills-alert{padding:12px 16px;border-radius:10px;background:rgba(24,144,255,0.08);border:1px solid rgba(24,144,255,0.15);font-size:14px;margin-bottom:16px}
 .skills-meta-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px}
