@@ -831,7 +831,6 @@ module.exports = {
         }
       }
     } catch (e) { try { console.error('[skills-management] locale init:', e) } catch {} }
-    globalThis.__skillsAppliedCount = ((globalThis.__skillsAppliedCount || 0) + 1)
     ctx.effect(() => {
       try {
       ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
