@@ -261,6 +261,11 @@ window.__ModuleLoader__.load({
     .sk-preview{flex:1;max-height:430px;overflow:auto;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-1);padding:14px}
     .sk-meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
     .sk-meta div{background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:10px 12px;min-width:0}
+    .sk-dlg-backdrop{position:fixed;inset:0;z-index:30;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:24px}
+    .sk-dlg{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);border-radius:14px;min-width:340px;max-width:640px;max-height:82vh;overflow:auto;padding:18px;box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-primary);font-family:var(--dsw-font-family)}
+    .sk-dlg h3{margin:0 0 12px;font-size:15px}
+    .sk-dlg-foot{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
+    .sk-toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:40;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l2);border-radius:999px;padding:8px 18px;font-size:13px;box-shadow:var(--dsw-shadow-lv2)}
     .sk-tabpill{background:transparent;border:none;color:var(--dsw-alias-label-secondary);font-family:var(--dsw-font-family)}
     </style>`
 
@@ -426,6 +431,7 @@ window.__ModuleLoader__.load({
       const copyContent = () => {
         navigator.clipboard.writeText(data?.content || '').then(() => {
           setToast(true)
+          setTimeout(() => setToast(false), 2200)
         }).catch(() => {})
       }
 
@@ -434,8 +440,7 @@ window.__ModuleLoader__.load({
       const isMd = file ? file.path.endsWith('.md') : true
 
       return h('div', null,
-        prim('Modal')
-          ? h(P.Modal, { open: true, onClose, title: shortName(sel.name), closeLabel: t('close'), contentClassName: 'sk-modal-wide' },
+        h(SkDialog, { title: shortName(sel.name), onClose, wide: true },
               h('div', { className: 'sk-page' },
                 h('div', { className: 'sk-hint' }, meta.description || meta.whenToUse || ''),
                 h('div', { className: 'sk-toolbar' },
@@ -463,17 +468,32 @@ window.__ModuleLoader__.load({
                   : h('div', { className: 'sk-preview sk-md' },
                       prim('MarkdownText')
                         ? h(P.MarkdownText, { text: data?.content || '' })
-                        : h('pre', { style: { whiteSpace: 'pre-wrap', margin: 0 } }, data?.content || ''))))
-            : null,
-        confirming && prim('Modal')
-          ? h(P.Modal, { open: true, onClose: () => setConfirming(false), title: t('deleteConfirm', { name: sel.name, where: row ? row.label : t('whereDsh') }), footer:
-              h('div', { className: 'sk-toolbar', style: { justifyContent: 'flex-end' } },
-                h(P.Button, { variant: 'ghost', size: 'sm', onClick: () => setConfirming(false) }, t('close')),
-                h(P.Button, { variant: 'primary', size: 'sm', onClick: doDelete }, t('deleteBtn'))) }, null)
-          : null,
-        toast && prim('Toast')
-          ? h(P.Toast, { text: t('copied'), onDone: () => setToast(false) })
-          : null)
+                        : h('pre', { style: { whiteSpace: 'pre-wrap', margin: 0 } }, data?.content || '')))),
+        confirming && h(SkDialog, {
+          title: t('deleteConfirm', { name: sel.name, where: row ? row.label : t('whereDsh') }),
+          onClose: () => setConfirming(false),
+          footer: [
+            h(ButtonLite, { onClick: () => setConfirming(false) }, t('close')),
+            h(ButtonLite, { danger: true, primary: true, onClick: doDelete }, t('deleteBtn')),
+          ],
+        }, null),
+        toast && h(InToast, { text: t('copied') }))
+    }
+
+    /** In-page dialog: rendered INSIDE the fullscreen overlay's stacking context
+     *  so it can never fall behind it (host Modal portals to <body> with a lower
+     *  z-index than the fullscreen page and would be invisible). */
+    function SkDialog({ title, onClose, footer, children, wide }) {
+      return h('div', { className: 'sk-dlg-backdrop', onClick: onClose },
+        h('div', { className: 'sk-dlg', style: wide ? { maxWidth: 920, width: '92vw' } : undefined,
+            onClick: e => e.stopPropagation() },
+          title && h('h3', null, title),
+          children,
+          footer && h('div', { className: 'sk-dlg-foot' }, footer)))
+    }
+
+    function InToast({ text }) {
+      return h('div', { className: 'sk-toast' }, text)
     }
 
     // ── Views ────────────────────────────────────────────────────────────────
@@ -637,6 +657,7 @@ window.__ModuleLoader__.load({
           const r = await fetch(API + '/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
           if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status)
           setToastText(t('installedToast'))
+          setTimeout(() => setToastText(null), 2600)
           reloadExecutors()
           setBaseStale(true)
         } catch (e) { alert(t('operationFailed') + ': ' + e.message) }
@@ -738,26 +759,26 @@ window.__ModuleLoader__.load({
           onClose: () => setSel(null),
           onInstalled: () => { setSel(null); reloadExecutors(); setBaseStale(true) },
           onDeleted: () => { setSel(null); reloadExecutors(); setBaseStale(true) } }),
-        pendingInstall && P && P.Modal && h(P.Modal, {
-          open: true,
-          onClose: () => setPendingInstall(null),
+        pendingInstall && h(SkDialog, {
           title: t('installTitle'),
-          footer: h('div', { className: 'sk-toolbar', style: { justifyContent: 'flex-end' } },
+          onClose: () => setPendingInstall(null),
+          footer: [
             h(ButtonLite, { onClick: () => setPendingInstall(null) }, t('cancel')),
-            h(ButtonLite, { primary: true, onClick: doPendingInstall }, t('installOk'))),
-        }, h('div', { className: 'sk-hint', style: { maxWidth: 460 } },
+            h(ButtonLite, { primary: true, onClick: doPendingInstall }, t('installOk')),
+          ],
+        }, h('div', { className: 'sk-hint' },
             t('installConfirm', { name: pendingInstall.name, label: pendingInstall.row ? pendingInstall.row.label : t('marketLabel') }))),
-        toastText && P && P.Toast && h(P.Toast, { text: toastText, onDone: () => setToastText(null) }),
-        pendingDelete && P && P.Modal && h(P.Modal, {
-          open: true,
-          onClose: () => setPendingDelete(null),
+        toastText && h(InToast, { text: toastText }),
+        pendingDelete && h(SkDialog, {
           title: t('deleteConfirm', {
             name: pendingDelete.name,
             where: pendingDelete.executor === 'dsh' || !pendingDelete.executor ? t('whereDsh') : ((executors.find(x => x.key === pendingDelete.executor) || {}).label || pendingDelete.executor),
           }),
-          footer: h('div', { className: 'sk-toolbar', style: { justifyContent: 'flex-end' } },
+          onClose: () => setPendingDelete(null),
+          footer: [
             h(ButtonLite, { onClick: () => setPendingDelete(null) }, t('close')),
-            h(ButtonLite, { primary: true, danger: true, onClick: doPendingDelete }, t('deleteBtn'))),
+            h(ButtonLite, { primary: true, danger: true, onClick: doPendingDelete }, t('deleteBtn')),
+          ],
         }, null))
       }
 
