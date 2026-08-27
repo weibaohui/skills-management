@@ -71,6 +71,7 @@ const ZH = {
   tabInstalled: '已安装',
   cardsHint: '选择一个执行器浏览它的技能，或一次查看全部',
   marketCardsHint: '选择一个来源仓库浏览其技能，或一次查看全部',
+  marketLoading: '正在加载市场目录…',
   backSources: '← 按来源',
   backMarketCards: '← 来源卡片',
   allMarketTitle: '全部市场技能',
@@ -96,7 +97,7 @@ const ZH = {
   emptySkillsIn: '{label} 中还没有技能',
   installedTag: '已装',
   readOnlyTag: '只读',
-  toDsh: '装入 DSH',
+  toDsh: '安装',
   deleteBtn: '删除',
   detail: '详情',
   filesCount: '{n} 个文件',
@@ -104,8 +105,8 @@ const ZH = {
   copy: '复制内容',
   copied: '已复制到剪贴板',
   installFrom: '从 {label} 安装',
-  installTitle: '装入 DSH',
-  installOk: '确认装入',
+  installTitle: '安装',
+  installOk: '确认安装',
   cancel: '取消',
   installedToast: '已装入 DSH 技能库',
   marketLabel: '市场',
@@ -130,6 +131,7 @@ const EN = {
   tabInstalled: 'Installed',
   cardsHint: 'Pick an executor to browse its skills, or view everything at once',
   marketCardsHint: 'Pick a source repo to browse its skills, or view everything at once',
+  marketLoading: 'Loading market catalog…',
   backSources: '← By source',
   backMarketCards: '← Source cards',
   allMarketTitle: 'All Market Skills',
@@ -155,7 +157,7 @@ const EN = {
   emptySkillsIn: 'No skills in {label}',
   installedTag: 'Installed',
   readOnlyTag: 'read-only',
-  toDsh: 'To DSH',
+  toDsh: 'Install',
   deleteBtn: 'Delete',
   detail: 'Detail',
   filesCount: '{n} files',
@@ -163,7 +165,7 @@ const EN = {
   copy: 'Copy content',
   copied: 'Copied to clipboard',
   installFrom: 'Install from {label}',
-  installTitle: 'Install to DSH',
+  installTitle: 'Install',
   installOk: 'Install',
   cancel: 'Cancel',
   installedToast: 'Installed into the DSH library',
@@ -622,12 +624,14 @@ function SkillsPage({ t, onClose, embedded }) {
   // (~2.3s). Load the summary eagerly and the market set lazily — only when
   // a tab that needs it is opened, and re-fetch it after mutations.
   const [baseStale, setBaseStale] = useState(true)
+  const [baseLoading, setBaseLoading] = useState(false)
   const reloadExecutors = () => {
     getJson(API + '/executors?mode=summary').then(d => setExecutors(d.executors || [])).catch(() => {})
   }
   const reloadBase = () => {
     setBaseStale(false)
-    getJson(API).then(setBase).catch(() => {})
+    setBaseLoading(true)
+    getJson(API).then(setBase).catch(() => {}).finally(() => setBaseLoading(false))
   }
   useEffect(reloadExecutors, [])
   useEffect(() => {
@@ -732,7 +736,9 @@ function SkillsPage({ t, onClose, embedded }) {
     const allMarket = base.market || []
     const lowerAll = searchMarketAll.toLowerCase()
     const mkRow = (src) => ({ key: '@market', label: splitSource(src), readOnly: false, deletable: false })
-    if (marketDrill !== null) {
+    if (baseLoading && !allMarket.length) {
+      body = h(Spinner, { label: t('marketLoading') })
+    } else if (marketDrill !== null) {
       let sk = allMarket.filter(s => s.source === marketDrill)
       const l = searchMarketDrill.toLowerCase()
       if (l) sk = sk.filter(s => matchSkill({ ...s, name: s.shortName || s.name }, l))
