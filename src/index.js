@@ -29,6 +29,8 @@ const RANK_INSTALLED = 100
 const RANK_MARKET = 500
 const MAX_BODY_BYTES = 64 * 1024
 const DESCRIPTION_LIMIT = 140
+// 同款正则见 skill/skill/src/index.ts SKILL_NAME —— 不合规的候选会让 registry 抛错
+const KEBAB_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 
 /**
  * Known on-machine skill sources (executor → skills dir), ported from ntd's
@@ -782,19 +784,27 @@ module.exports = {
         async list() {
           const { market, installed } = await discoverAll()
           const candidates = []
-          // Fail-soft: the harness rejects candidates with an empty description
-          // (skill-registry throws and kills the requesting session's turn), so
-          // skip broken frontmatter here instead of poisoning the registry.
+          // Fail-soft: the registry throws — and kills the requesting session's
+          // turn — on candidates that fail harness validation (empty
+          // description, non-kebab-case name). Market checkouts with malformed
+          // frontmatter trigger both routinely, so pre-filter here.
+          const isValid = (row) => {
+            if (!row.name || !KEBAB_NAME_RE.test(row.name)) return `invalid name '${row.name}'`
+            if (!row.description || row.description.trim() === '') return 'empty description'
+            return undefined
+          }
           for (const row of installed) {
-            if (!row.description || row.description.trim() === '') {
-              ctx.logger.warn(`skills-management: skipping installed skill '${row.name}' (${row.entry.dir}): empty description`)
+            const why = isValid(row)
+            if (why !== undefined) {
+              ctx.logger.warn(`skills-management: skipping installed skill '${row.name}' (${row.entry.dir}): ${why}`)
               continue
             }
             candidates.push(toCandidate(row, 'user-installed', RANK_INSTALLED))
           }
           for (const row of market) {
-            if (!row.description || row.description.trim() === '') {
-              ctx.logger.warn(`skills-management: skipping market skill '${row.entry.relPath}': empty/malformed description frontmatter`)
+            const why = isValid(row)
+            if (why !== undefined) {
+              ctx.logger.warn(`skills-management: skipping market skill '${row.entry.relPath}': ${why}`)
               continue
             }
             const shortName = row.name.includes('/') ? row.name.split('/').pop() : row.name
