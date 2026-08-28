@@ -285,23 +285,30 @@ window.__ModuleLoader__.load({
       return out
     }
 
-    const SHARE_PROMPT_ZH = `请把本机的一个 Claude 技能分享到官方仓库并创建 PR，步骤：
-    1. 读取 ~/.dsh/settings.yaml 中 skills-management.market 段的 token（GitCode 个人访问令牌）。
-    2. 使用该 token 调用 GitCode API：fork 仓库 https://gitcode.com/weibaohui/ntd-resource（若已 fork 则复用）。
-    3. 在 fork 中基于 main 创建分支 share/{{skillName}}。
-    4. 把本机目录 {{resourceDir}} 下的全部文件提交到分支的 {{remotePath}} 路径下（整目录复制，保持结构）。
-    5. 创建从该分支指向 weibaohui/ntd-resource:main 的 PR，标题「skill: {{skillName}}」，正文简述该技能用途。
-    6. 汇报 PR 链接；若任一步失败，说明原因并停止，不要伪造结果。
-    技能：{{skillName}}（版本 {{version}}）`
-
-    const SHARE_PROMPT_EN = `Share a local Claude skill to the official repo and open a PR:
-    1. Read the token (GitCode PAT) from the skills-management.market section of ~/.dsh/settings.yaml.
-    2. Using that token via the GitCode API: fork https://gitcode.com/weibaohui/ntd-resource (reuse an existing fork).
-    3. Create branch share/{{skillName}} off main in the fork.
-    4. Commit every file under local directory {{resourceDir}} to {{remotePath}} in that branch (whole directory, structure preserved).
-    5. Open a PR from the branch to weibaohui/ntd-resource:main titled "skill: {{skillName}}" with a short description.
-    6. Report the PR URL; if any step fails, explain and stop — never fake a result.
-    Skill: {{skillName}} (version {{version}})`
+    const SHARE_PROMPT_ZH = [
+      '请把本地技能「{{skillName}}」{{version}}打包提交到 GitCode 官方仓库，作为一个 PR 供维护者审核。',
+      '',
+      '## 关键信息',
+      '- 技能目录：{{resourceDir}}（~ 表示当前用户家目录，执行前先展开为绝对路径）',
+      '- 官方仓库：weibaohui/ntd-resource（GitCode，API base = https://api.gitcode.com）',
+      '- PAT 位置：~/.dsh/settings.yaml 中 skills-management.market 段的 token 字段（由技能市场设置面板保存）。',
+      '',
+      '## 执行步骤（严格按顺序）',
+      '1. 读取 PAT：读取 ~/.dsh/settings.yaml，定位 skills-management.market 段下的 token 字段。token 是敏感凭据，读取后不要把明文打印到输出、日志或最终结果里。',
+      '2. 展开技能目录为绝对路径，遍历该目录，收集每个文件的「相对该目录的路径」与内容；跳过 .downloaded_at、.clawhub、.git 三类同步元数据。',
+      '3. 把第 1 步读到的 token 作为 HTTP 认证令牌，附加到下面每个 GitCode API 请求的认证头里（bearer 认证方式），不要写成占位符：',
+      '   a. 验证用户：`GET https://api.gitcode.com/api/v5/user`，拿到返回的 login 字段——这是 token 真实所属的账号，后续所有 URL 里的 {owner} 一律用它。',
+      '   b. fork：`POST https://api.gitcode.com/api/v5/repos/weibaohui/ntd-resource/forks`；若返回 409/422 表示已 fork，视为成功。',
+      '   c. 建分支：`POST https://api.gitcode.com/api/v5/repos/{步骤 a 的 login}/ntd-resource/branches`，JSON body 为 {"branch_name":"contrib/{{skillName}}-<unix 时间戳>","refs":"main"}。',
+      '   d. 写文件：对第 2 步收集的每个文件，`POST https://api.gitcode.com/api/v5/repos/{步骤 a 的 login}/ntd-resource/contents/{{remotePath}}<该文件的相对路径>`。**必须**用这个远端路径前缀，不能写到仓库根目录。表单字段 content=<文件字节的 base64>、message="贡献技能 {{skillName}} {{version}}"、branch=<步骤 c 的分支名>。',
+      '   e. 创建 PR：`POST https://api.gitcode.com/api/v5/repos/weibaohui/ntd-resource/pulls`，JSON body 为 {"title":"[技能] {{skillName}} {{version}}","body":"技能目录 {{resourceDir}} 的文件清单与用途简介","head":"{步骤 a 的 login}:{branch}","base":"main"}。',
+      '4. 完成后，最终输出 PR 的网页链接（响应里的 web_url 字段）。',
+      '',
+      '## 注意',
+      '- token 是敏感凭据，任何输出里都不要回显其明文。',
+      '- 如果任一步骤失败，先检查错误信息，不要盲目重试；若 token 失效，提示用户到技能市场的 ⚙ 设置面板重新填写。',
+      '- 全程与最终汇报都使用中文。',
+    ].join('\n')
 
     const API = '/skills-management/api'
 
@@ -642,8 +649,7 @@ window.__ModuleLoader__.load({
 
     /** ntd ActionButton 同款分享抽屉:可编辑提示词 + 参数预览 + 复制到会话执行。 */
     function ShareSkillDialog({ t, params, onClose, onToast }) {
-      const isZh = (typeof navigator !== 'undefined' && /zh/i.test(String(navigator.language || '')))
-      const [prompt, setPrompt] = useState(substituteParams(isZh ? SHARE_PROMPT_ZH : SHARE_PROMPT_EN, params))
+      const [prompt, setPrompt] = useState(substituteParams(SHARE_PROMPT_ZH, params))
       const [hasToken, setHasToken] = useState(null)
       const [job, setJob] = useState(null)   // {jobId,status,output,code}
       const [busy, setBusy] = useState(false)
