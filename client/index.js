@@ -61,6 +61,9 @@ const prim = (name) => P && P[name]
 // Sessions service (client runtime): opens the run's conversation in the
 // real UI. Captured at apply(); absence degrades the button to hidden.
 let sessionsService = null
+let uiCtx = null
+// ctx 是服务代理:apply 瞬间服务可能尚未就绪,取用必须延迟到点击时
+const sessionsSvc = () => sessionsService || (uiCtx && uiCtx.sessions) || null
 
 // ── Locale ───────────────────────────────────────────────────────────────
 
@@ -680,7 +683,7 @@ function ShareSkillDialog({ t, params, onClose, onToast }) {
           job.output || '…')),
       h('div', { className: 'sk-dlg-foot', style: { marginTop: 0 } },
         h(ButtonLite, { onClick: copy }, t('copyPrompt')),
-        job !== null && job.sessionId && sessionsService && h(ButtonLite, { onClick: () => { if (openRunSession(job.sessionId)) onClose() } }, t('openChat')),
+        job !== null && job.sessionId && sessionsSvc() && h(ButtonLite, { onClick: () => { if (openRunSession(job.sessionId)) onClose() } }, t('openChat')),
         h(ButtonLite, { primary: true, disabled: busy || (job !== null && job.status === 'running'), onClick: doRun },
           job !== null && job.status === 'running' ? t('running') : t('runBtn')))))
 }
