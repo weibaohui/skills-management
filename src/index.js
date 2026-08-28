@@ -402,8 +402,10 @@ const SHARE_RUN_OUTPUT_CAP = 256 * 1024
  *  Mirrors packages/bundle/headless/src/index.ts run(). */
 async function runShareInProcess(services, { prompt, dir, job, logger }) {
   const selection = services.agentDefaultModel.currentSelection()
+  const sessionId = 'session-' + randomUUID()
+  job.sessionId = sessionId
   const { agent } = await services.agents.create({
-    sessionId: 'session-' + randomUUID(),
+    sessionId,
     meta: { cwd: dir },
     agentOptions: { provider: selection.provider, model: selection.model },
   })

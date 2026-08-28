@@ -68,6 +68,10 @@ window.__ModuleLoader__.load({
           return h(tag, { ...rest, 'data-p-shim': name }, children)
         }
 
+    // Sessions service (client runtime): opens the run's conversation in the
+    // real UI. Captured at apply(); absence degrades the button to hidden.
+    let sessionsService = null
+
     // ── Locale ───────────────────────────────────────────────────────────────
 
     const NS = 'skillsManagement'
@@ -112,6 +116,7 @@ window.__ModuleLoader__.load({
       shareParamVersion: '版本',
       copyPrompt: '复制提示词',
       runBtn: '执行',
+      openChat: '打开对话',
       running: '执行中…（可能需要几分钟）',
       runDone: '执行完成',
       runFailed: '执行失败',
@@ -209,6 +214,7 @@ window.__ModuleLoader__.load({
       shareParamVersion: 'Version',
       copyPrompt: 'Copy prompt',
       runBtn: 'Run',
+      openChat: 'Open chat',
       running: 'Running… (may take minutes)',
       runDone: 'Run complete',
       runFailed: 'Run failed',
@@ -647,7 +653,7 @@ window.__ModuleLoader__.load({
         if (job === null || job.status !== 'running') return
         const timer = setInterval(() => {
           getJson(API + '/share/run?id=' + encodeURIComponent(job.jobId))
-            .then(d => setJob(prev => prev && { ...prev, status: d.status, output: d.output || '', code: d.code }))
+            .then(d => setJob(prev => prev && { ...prev, status: d.status, output: d.output || '', code: d.code, sessionId: d.sessionId || prev.sessionId }))
             .catch(() => {})
         }, 2000)
         if (typeof timer.unref === 'function') timer.unref()
@@ -684,6 +690,7 @@ window.__ModuleLoader__.load({
               job.output || '…')),
           h('div', { className: 'sk-dlg-foot', style: { marginTop: 0 } },
             h(ButtonLite, { onClick: copy }, t('copyPrompt')),
+            job !== null && job.sessionId && sessionsService && h(ButtonLite, { onClick: () => { if (openRunSession(job.sessionId)) onClose() } }, t('openChat')),
             h(ButtonLite, { primary: true, disabled: busy || (job !== null && job.status === 'running'), onClick: doRun },
               job !== null && job.status === 'running' ? t('running') : t('runBtn')))))
     }
@@ -1207,7 +1214,7 @@ window.__ModuleLoader__.load({
 
     module.exports = {
       name: CLIENT_NAME,
-      inject: ['slots', 'locale'],
+      inject: ['slots', 'locale', 'sessions'],
       __internals: { NS, ZH, EN, matchSkill, formatSize, formatTime },
       /** Test/host helper: mount a standalone page into any container. */
       __boot(container, opts = {}) {

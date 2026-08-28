@@ -14,7 +14,7 @@ const { NS, ZH, EN, matchSkill, formatSize } = plugin.__internals
 
 test('client module declares slots + locale injects', () => {
   assert.equal(plugin.name, 'dsh-plugin-skills-management') // must equal the boot manifest id
-  assert.deepEqual(plugin.inject.sort(), ['locale', 'slots'])
+  assert.deepEqual(plugin.inject.sort(), ['locale', 'sessions', 'slots'])
 })
 
 test('locale dictionaries are zh/en with identical key sets', () => {
