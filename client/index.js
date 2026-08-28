@@ -484,7 +484,7 @@ function SkillCard({ row, s, t, onOpen, onInstall, onDelete, onShare }) {
         (row.deletable !== false && !row.readOnly) && h(ButtonLite, { danger: true, small: true,
           onClick: e => { e.stopPropagation(); onDelete(row, s.name) } }, t('deleteBtn')),
         onShare && h(ButtonLite, { small: true, title: t('shareBtn'),
-          onClick: e => { e.stopPropagation(); onShare(row, s) } }, '\u29C4'))))
+          onClick: e => { e.stopPropagation(); onShare(row, s) } }, '\u29C4 ' + t('shareBtn')))))
 }
 
 /** Tiny variant buttons before P.Button availability resolution settles —
