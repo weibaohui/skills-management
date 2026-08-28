@@ -406,7 +406,9 @@ async function runShareInProcess(services, { prompt, dir, job, logger }) {
   job.sessionId = sessionId
   const { agent } = await services.agents.create({
     sessionId,
-    meta: { cwd: dir },
+    // 标准预设:不带显式选择会继承用户默认(如 Solo Thinking 只有
+    // thinking/notify 工具),读文件/调 API 都做不了
+    meta: { cwd: dir, agentPreset: 'standard' },
     agentOptions: { provider: selection.provider, model: selection.model },
   })
   await agent.whenIdle()
