@@ -782,8 +782,21 @@ module.exports = {
         async list() {
           const { market, installed } = await discoverAll()
           const candidates = []
-          for (const row of installed) { candidates.push(toCandidate(row, 'user-installed', RANK_INSTALLED)) }
+          // Fail-soft: the harness rejects candidates with an empty description
+          // (skill-registry throws and kills the requesting session's turn), so
+          // skip broken frontmatter here instead of poisoning the registry.
+          for (const row of installed) {
+            if (!row.description || row.description.trim() === '') {
+              ctx.logger.warn(`skills-management: skipping installed skill '${row.name}' (${row.entry.dir}): empty description`)
+              continue
+            }
+            candidates.push(toCandidate(row, 'user-installed', RANK_INSTALLED))
+          }
           for (const row of market) {
+            if (!row.description || row.description.trim() === '') {
+              ctx.logger.warn(`skills-management: skipping market skill '${row.entry.relPath}': empty/malformed description frontmatter`)
+              continue
+            }
             const shortName = row.name.includes('/') ? row.name.split('/').pop() : row.name
             if (installed.some((e) => e.name === shortName)) continue
             candidates.push(toCandidate(row, 'market', RANK_MARKET))
