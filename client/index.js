@@ -101,6 +101,11 @@ const ZH = {
   shareParamRemote: '目标路径',
   shareParamVersion: '版本',
   copyPrompt: '复制提示词',
+  runBtn: '执行',
+  running: '执行中…（可能需要几分钟）',
+  runDone: '执行完成',
+  runFailed: '执行失败',
+  outputLabel: '执行输出',
   promptCopied: '提示词已复制，粘贴到输入框发送即可执行',
   repoMissing: '尚未克隆，点「立即同步」拉取',
   backSources: '← 按来源',
@@ -193,6 +198,11 @@ const EN = {
   shareParamRemote: 'Remote path',
   shareParamVersion: 'Version',
   copyPrompt: 'Copy prompt',
+  runBtn: 'Run',
+  running: 'Running… (may take minutes)',
+  runDone: 'Run complete',
+  runFailed: 'Run failed',
+  outputLabel: 'Output',
   promptCopied: 'Prompt copied — paste into the composer and send',
   repoMissing: 'Not cloned yet — hit Sync now',
   backSources: '← By source',
@@ -617,9 +627,31 @@ function ShareSkillDialog({ t, params, onClose, onToast }) {
   const isZh = (typeof navigator !== 'undefined' && /zh/i.test(String(navigator.language || '')))
   const [prompt, setPrompt] = useState(substituteParams(isZh ? SHARE_PROMPT_ZH : SHARE_PROMPT_EN, params))
   const [hasToken, setHasToken] = useState(null)
+  const [job, setJob] = useState(null)   // {jobId,status,output,code}
+  const [busy, setBusy] = useState(false)
   useEffect(() => {
     getJson(API + '/market/status').then(d => setHasToken(d.hasToken === true)).catch(() => setHasToken(false))
   }, [])
+  // 轮询执行输出,直到关闭/结束
+  useEffect(() => {
+    if (job === null || job.status !== 'running') return
+    const timer = setInterval(() => {
+      getJson(API + '/share/run?id=' + encodeURIComponent(job.jobId))
+        .then(d => setJob(prev => prev && { ...prev, status: d.status, output: d.output || '', code: d.code }))
+        .catch(() => {})
+    }, 2000)
+    if (typeof timer.unref === 'function') timer.unref()
+    return () => clearInterval(timer)
+  }, [job && job.status])
+  const doRun = async () => {
+    setBusy(true)
+    try {
+      const r = await fetch(API + '/share/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt, dir: params.resourceDir }) })
+      const d = await r.json().catch(() => ({}))
+      if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status)
+      setJob({ jobId: d.jobId, status: 'running', output: '', code: null })
+    } catch (e) { onToast(t('runFailed') + ': ' + e.message) } finally { setBusy(false) }
+  }
   const row = (label, value) => h('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 12, padding: '3px 0' } },
     h('span', { className: 'sk-dir' }, label), h('span', { className: 'sk-hint', style: { wordBreak: 'break-all', textAlign: 'right' } }, value))
   const copy = () => {
@@ -635,8 +667,15 @@ function ShareSkillDialog({ t, params, onClose, onToast }) {
         row(t('shareParamRemote'), params.remotePath)),
       h('textarea', { className: 'sk-input', value: prompt, onChange: e => setPrompt(e.target.value),
         style: { width: '100%', minHeight: 190, resize: 'vertical', fontFamily: 'var(--dsw-font-family)', lineHeight: 1.6 } }),
+      job !== null && h('div', null,
+        h('div', { className: 'sk-dir', style: { margin: '4px 0' } },
+          t('outputLabel') + ' · ' + (job.status === 'running' ? t('running') : job.status === 'done' ? t('runDone') : t('runFailed') + (job.code != null ? ' (' + job.code + ')' : ''))),
+        h('pre', { className: 'sk-preview', style: { maxHeight: 220, margin: 0, whiteSpace: 'pre-wrap', fontSize: 12 } },
+          job.output || '…')),
       h('div', { className: 'sk-dlg-foot', style: { marginTop: 0 } },
-        h(ButtonLite, { primary: true, onClick: copy }, t('copyPrompt')))))
+        h(ButtonLite, { onClick: copy }, t('copyPrompt')),
+        h(ButtonLite, { primary: true, disabled: busy || (job !== null && job.status === 'running'), onClick: doRun },
+          job !== null && job.status === 'running' ? t('running') : t('runBtn')))))
 }
 
 /** Market sync settings: status card, sync action, editable url/branch. */

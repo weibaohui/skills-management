@@ -42,7 +42,8 @@ function setupPlugin(config) {
       end(chunk) { chunks.body = chunk === undefined ? '' : String(chunk) },
     }
     if (body !== undefined) {
-      process.nextTick(() => { req.emit('data', Buffer.from(JSON.stringify(body))); req.emit('end') })
+      // 30ms:让路由里先于 readJsonBody 的 await(状态文件读取)先行完成,事件再发射
+      setTimeout(() => { req.emit('data', Buffer.from(JSON.stringify(body))); req.emit('end') }, 30)
     }
     await handler(req, res)
     return { status: chunks.status, payload: chunks.body ? JSON.parse(chunks.body) : undefined }
@@ -565,7 +566,7 @@ test('market settings persist through the host settings service when present', a
       const res = { writeHead() {}, end: (c) => fulfil(c ? JSON.parse(String(c)) : undefined) }
       const req = new (require('node:events').EventEmitter)()
       req.method = method; req.url = url; req.headers = {}
-      if (body !== undefined) setTimeout(() => { req.emit('data', Buffer.from(JSON.stringify(body))); req.emit('end') }, 0)
+      if (body !== undefined) setTimeout(() => { req.emit('data', Buffer.from(JSON.stringify(body))); req.emit('end') }, 30)
       globalThis.__settingsRoute(req, res)
     })
 
@@ -579,6 +580,44 @@ test('market settings persist through the host settings service when present', a
     assert.equal(st.branch, 'dev')
     assert.equal(st.url, 'https://example.com/x.git', 'composition base preserved')
   } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('share/run executes a real process in the skill directory', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-share-run-'))
+  try {
+    // 假 dsh:echo 二进制,输出任务文本以便断言(SKILLS_DSH_BIN 覆盖)
+    await mkdir(join(root, 'skill'), { recursive: true })
+    await writeFile(join(root, 'skill', 'SKILL.md'), '---\nname: x\n---\nbody')
+    const env = setupPlugin({
+      marketRepoDir: join(root, 'repo'),
+      installedDir: join(root, 'installed'),
+      marketSync: { syncOnStartup: false, autoSync: false },
+    })
+    process.env.SKILLS_DSH_BIN = '/bin/echo'
+
+    const bad1 = await env.call('POST', '/skills-management/api/share/run', { dir: join(root, 'skill') })
+    assert.equal(bad1.status, 400, 'missing prompt rejected')
+    const bad2 = await env.call('POST', '/skills-management/api/share/run', { prompt: 'hi' })
+    assert.equal(bad2.status, 400, 'missing dir rejected')
+    const bad3 = await env.call('POST', '/skills-management/api/share/run', { prompt: 'hi', dir: join(root, 'nope') })
+    assert.equal(bad3.status, 400, 'unknown dir rejected')
+
+    const start = await env.call('POST', '/skills-management/api/share/run', { prompt: 'OK-RUN', dir: join(root, 'skill') })
+    assert.equal(start.status, 202)
+    assert.equal(start.payload.status, 'running')
+    // 等待 echo 进程完成
+    let job = null
+    for (let i = 0; i < 20; i += 1) {
+      await new Promise(r => setTimeout(r, 100))
+      job = await env.call('GET', '/skills-management/api/share/run?id=' + start.payload.jobId)
+      if (job.payload.status !== 'running') break
+    }
+    assert.equal(job.payload.status, 'done')
+    assert.ok(String(job.payload.output).includes('OK-RUN'), 'process output captured')
+  } finally {
+    delete process.env.SKILLS_DSH_BIN
     await rm(root, { recursive: true, force: true })
   }
 })

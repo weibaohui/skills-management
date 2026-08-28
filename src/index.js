@@ -14,7 +14,7 @@
  */
 
 const { createReadStream } = require('node:fs')
-const { execFile } = require('node:child_process')
+const { execFile, spawn } = require('node:child_process')
 const fsP = require('node:fs/promises')
 const { basename, join, relative, resolve, sep } = require('node:path')
 const { homedir } = require('node:os')
@@ -388,6 +388,48 @@ function mergeMarketSync(config, overrides) {
   return { ...DEFAULT_MARKET_SYNC, ...cfg, ...(overrides || {}) }
 }
 
+// ── Share-run jobs: real execution via the official headless channel
+// (`dsh --profile headless "<task>"`, cwd = the skill directory — the
+// workspace, session and model loop are owned by that one-shot process). ──
+
+const SHARE_RUN_TIMEOUT_MS = 30 * 60 * 1000
+const SHARE_RUN_OUTPUT_CAP = 256 * 1024
+
+function createShareRunJob({ binary, prompt, dir, jobs, logger }) {
+  const id = 'sr' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
+  const job = { id, status: 'running', startedAt: new Date().toISOString(), dir, promptHead: prompt.slice(0, 80), output: '', code: null }
+  jobs.set(id, job)
+  let child
+  try {
+    child = spawn(binary, ['--profile', 'headless', prompt], { cwd: dir })
+  } catch (e) {
+    job.status = 'error'
+    job.output = String(e && e.message)
+    return job
+  }
+  const append = (chunk) => {
+    job.output = (job.output + String(chunk)).slice(-SHARE_RUN_OUTPUT_CAP)
+  }
+  child.stdout && child.stdout.on('data', append)
+  child.stderr && child.stderr.on('data', append)
+  const timer = setTimeout(() => {
+    try { child.kill('SIGKILL') } catch {}
+    job.status = 'error'
+    job.output += '\n[killed: timeout]'
+  }, SHARE_RUN_TIMEOUT_MS)
+  if (typeof timer.unref === 'function') timer.unref()
+  child.on('error', (e) => { clearTimeout(timer); job.status = 'error'; append('\n' + String(e && e.message)) })
+  child.on('close', (code) => {
+    clearTimeout(timer)
+    if (job.status === 'running') {
+      job.status = code === 0 ? 'done' : 'error'
+      job.code = code
+    }
+    logger.info && logger.info(`skills-management: share run ${id} ${job.status} (code ${code})`)
+  })
+  return job
+}
+
 function contentTypeFor(p) {
   const ext = p.slice(p.lastIndexOf('.') + 1).toLowerCase()
   const map = { md: 'text/markdown; charset=utf-8', txt: 'text/plain; charset=utf-8', json: 'application/json; charset=utf-8', js: 'text/javascript', mjs: 'text/javascript', ts: 'text/typescript', tsx: 'text/typescript', css: 'text/css', html: 'text/html', svg: 'image/svg+xml', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', yaml: 'text/yaml', yml: 'text/yaml' }
@@ -664,6 +706,7 @@ module.exports = {
       return () => clearInterval(timer)
     }, 'skills-management: market auto-sync')
 
+    const shareRunJobs = new Map()
     let providerControl
     const invalidate = () => { if (providerControl !== undefined) providerControl.invalidate() }
 
@@ -740,8 +783,10 @@ module.exports = {
 
           // PUT /skills-management/api/market/settings {url?, branch?, autoSync?, syncOnStartup?}
           if (req.method === 'PUT' && apiPath.endsWith('/skills-management/api/market/settings')) {
-            await marketStateLoaded
+            // body first: readJsonBody attaches listeners synchronously, so no
+            // event can slip past while the state-file promise resolves
             const body = await readJsonBody(req)
+            await marketStateLoaded
             const patch = {}
             for (const key of ['url', 'branch', 'gitBinary']) {
               if (typeof body[key] === 'string' && body[key] !== '') patch[key] = body[key]
@@ -763,6 +808,29 @@ module.exports = {
             const eff = marketSettings()
             const { token, ...safe } = eff  // token 只写不回读
             sendJson(res, 200, { settings: safe, hasToken: typeof token === 'string' && token !== '' })
+            return
+          }
+
+          // POST /skills-management/api/share/run {prompt, dir} → real headless run
+          if (req.method === 'POST' && apiPath.endsWith('/skills-management/api/share/run')) {
+            const body = await readJsonBody(req)
+            if (typeof body.prompt !== 'string' || body.prompt.trim() === '') { sendJson(res, 400, { error: 'body must provide prompt' }); return }
+            if (typeof body.dir !== 'string' || body.dir === '') { sendJson(res, 400, { error: 'body must provide dir' }); return }
+            const dir = resolve(expandTilde(body.dir))
+            const stat = await fsP.stat(dir).catch(() => undefined)
+            if (stat === undefined || !stat.isDirectory()) { sendJson(res, 400, { error: `dir not found: ${displayPath(dir)}` }); return }
+            const binary = process.env.SKILLS_DSH_BIN || 'dsh'
+            const job = createShareRunJob({ binary, prompt: body.prompt, dir, jobs: shareRunJobs, logger: ctx.logger })
+            sendJson(res, 202, { jobId: job.id, status: job.status })
+            return
+          }
+
+          // GET /skills-management/api/share/run?id= → job status/output
+          if (req.method === 'GET' && apiPath.endsWith('/skills-management/api/share/run')) {
+            const id = query.get('id') || ''
+            const job = shareRunJobs.get(id)
+            if (job === undefined) { sendJson(res, 404, { error: 'job not found' }); return }
+            sendJson(res, 200, { ...job, output: job.output.slice(-32 * 1024) })
             return
           }
 
