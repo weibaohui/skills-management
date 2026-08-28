@@ -1210,7 +1210,9 @@ window.__ModuleLoader__.load({
       const wide = props.wide !== false
       return h('span', { style: { display: 'contents' } },
         h('button', { title: labelText, 'aria-label': labelText, onClick: () => panelStore.set(!panelStore.open),
-            style: footerStyle() }, '\u{1F3AF}', wide ? ' ' + labelText : ''),
+            style: footerStyle() },
+          P && P.IconSkillOutline16 ? h(P.IconSkillOutline16, { size: 16 }) : '\u{1F3AF}',
+          wide ? ' ' + labelText : ''),
         open && (() => {
           const page = h(SkillsPage, { t, embedded: false, onClose: () => panelStore.set(false) })
           // Fullscreen: portal the fixed-position page to <body> so no sidebar
