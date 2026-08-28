@@ -59,11 +59,10 @@ const prim = (name) => P && P[name]
     }
 
 // Sessions service (client runtime): opens the run's conversation in the
-// real UI. Captured at apply(); absence degrades the button to hidden.
-let sessionsService = null
-let uiCtx = null
-// ctx 是服务代理:apply 瞬间服务可能尚未就绪,取用必须延迟到点击时
-const sessionsSvc = () => sessionsService || (uiCtx && uiCtx.sessions) || null
+// real UI. Resolved through dynamic ctx.inject (ui-commands precedent);
+// absence degrades the 打开对话 button to hidden.
+let sessionsApi = null
+const sessionsSvc = () => sessionsApi
 
 // ── Locale ───────────────────────────────────────────────────────────────
 
@@ -1169,6 +1168,17 @@ const panelStore = {
   subscribe(fn) { panelStore.listeners.add(fn); return () => panelStore.listeners.delete(fn) },
 }
 
+/** Jump to the run's conversation: open() is best-effort (it may reject
+ *  after the selection lands), but folding our overlay must always happen. */
+function openRunSession(sessionId) {
+  try {
+    const svc = sessionsSvc()
+    if (svc && typeof svc.open === 'function') svc.open(sessionId)
+  } catch {}
+  panelStore.set(false)
+  return true
+}
+
 /** Footer slot entry: the button, and — when open — the whole market page
  *  through the host primitives Modal (portal + overlay handled by the host's
  *  own React tree; no custom createRoot, which never commits here). */
@@ -1176,6 +1186,7 @@ function FooterSlotComponent(props) {
   const [open, setOpen] = useState(panelStore.open)
   useEffect(() => panelStore.subscribe(setOpen), [])
   useEffect(ensureStyles, [])
+
   const t = props.__t
   const labelText = t ? t('title') : 'Skills Market'
   // The sidebar renders this entry with a `wide` owner prop: the collapsed
@@ -1207,7 +1218,7 @@ const CLIENT_NAME = 'dsh-plugin-skills-management'
 
 module.exports = {
   name: CLIENT_NAME,
-  inject: ['slots', 'locale', 'sessions'],
+  inject: ['slots', 'locale'],
   __internals: { NS, ZH, EN, matchSkill, formatSize, formatTime },
   /** Test/host helper: mount a standalone page into any container. */
   __boot(container, opts = {}) {
@@ -1225,6 +1236,17 @@ module.exports = {
     return root
   },
   apply(ctx) {
+    // Sessions face for 打开对话: dynamic inject per the ui-commands
+    // precedent (scope.sessions). Static inject must NOT list services —
+    // that stalls activation; root-level slot entries get no standard kit.
+    try {
+      if (typeof ctx.inject === 'function') {
+        ctx.inject(['sessions'], (scope) => {
+          const svc = scope && scope.sessions
+          if (svc && typeof svc.open === 'function') sessionsApi = svc
+        })
+      }
+    } catch {}
     // Locale service is optional at boot order — degrade to EN until present
     let t = (key, vars) => {
       let out = EN[key] ?? key
