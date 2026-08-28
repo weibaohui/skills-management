@@ -15,6 +15,7 @@
 
 const { createReadStream } = require('node:fs')
 const { execFile, spawn } = require('node:child_process')
+const { randomUUID } = require('node:crypto')
 const fsP = require('node:fs/promises')
 const { basename, join, relative, resolve, sep } = require('node:path')
 const { homedir } = require('node:os')
@@ -395,10 +396,61 @@ function mergeMarketSync(config, overrides) {
 const SHARE_RUN_TIMEOUT_MS = 30 * 60 * 1000
 const SHARE_RUN_OUTPUT_CAP = 256 * 1024
 
-function createShareRunJob({ binary, prompt, dir, jobs, logger }) {
+/** In-process run: drive the same Agent services the web app uses and
+ *  stream assistant/chunk tokens + tool calls into the job's output as they
+ *  happen (headless prints only the final message — no live channel there).
+ *  Mirrors packages/bundle/headless/src/index.ts run(). */
+async function runShareInProcess(services, { prompt, dir, job, logger }) {
+  const selection = services.agentDefaultModel.currentSelection()
+  const { agent } = await services.agents.create({
+    sessionId: 'session-' + randomUUID(),
+    meta: { cwd: dir },
+    agentOptions: { provider: selection.provider, model: selection.model },
+  })
+  await agent.whenIdle()
+  const firstSeq = agent.session.seq
+  const seen = new Set()
+  const liveLine = (text) => {
+    job.output = (job.output + text).slice(-SHARE_RUN_OUTPUT_CAP)
+  }
+  const pump = () => {
+    for (const ev of agent.session.events) {
+      if (ev.seq < firstSeq || seen.has(ev.seq)) continue
+      seen.add(ev.seq)
+      const d = ev.data || {}
+      if (ev.type === 'assistant/chunk' && d.chunk && d.chunk.type === 'text' && d.chunk.text) {
+        liveLine(d.chunk.text)
+      } else if (ev.type === 'tool/call') {
+        liveLine('\n[tool] ' + d.name + ' ')
+      } else if (ev.type === 'assistant/message') {
+        liveLine('\n')
+      }
+    }
+  }
+  const timer = setInterval(pump, 300)
+  if (typeof timer.unref === 'function') timer.unref()
+  try {
+    agent.followup({ content: [{ type: 'text', text: prompt }], source: { kind: 'user' } })
+    await agent.whenIdle()
+  } finally {
+    clearInterval(timer)
+    pump()
+  }
+  try { await services.sessions.flush(agent.session) } catch {}
+  job.status = 'done'
+  job.code = 0
+  return job
+}
+
+function createShareRunJob({ binary, prompt, dir, jobs, logger, services }) {
   const id = 'sr' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
   const job = { id, status: 'running', startedAt: new Date().toISOString(), dir, promptHead: prompt.slice(0, 80), output: '', code: null }
   jobs.set(id, job)
+  if (services && services.agents && services.agentDefaultModel) {
+    runShareInProcess(services, { prompt, dir, job, logger })
+      .catch(e => { job.status = 'error'; job.output = (job.output + '\n' + String(e && e.message)).slice(-SHARE_RUN_OUTPUT_CAP) })
+    return job
+  }
   let child
   try {
     child = spawn(binary, ['--profile', 'headless', prompt], { cwd: dir })
@@ -707,6 +759,14 @@ module.exports = {
     }, 'skills-management: market auto-sync')
 
     const shareRunJobs = new Map()
+    // Same-process Agent services (the web app's own): when available the
+    // share run streams live; absent compositions fall back to headless spawn.
+    let shareServices = null
+    try {
+      if (ctx.inject && typeof ctx.inject === 'function') {
+        ctx.inject(['agents', 'agentDefaultModel', 'sessions'], (svcs) => { shareServices = svcs })
+      }
+    } catch {}
     let providerControl
     const invalidate = () => { if (providerControl !== undefined) providerControl.invalidate() }
 
@@ -820,7 +880,7 @@ module.exports = {
             const stat = await fsP.stat(dir).catch(() => undefined)
             if (stat === undefined || !stat.isDirectory()) { sendJson(res, 400, { error: `dir not found: ${displayPath(dir)}` }); return }
             const binary = process.env.SKILLS_DSH_BIN || 'dsh'
-            const job = createShareRunJob({ binary, prompt: body.prompt, dir, jobs: shareRunJobs, logger: ctx.logger })
+            const job = createShareRunJob({ binary, prompt: body.prompt, dir, jobs: shareRunJobs, logger: ctx.logger, services: shareServices })
             sendJson(res, 202, { jobId: job.id, status: job.status })
             return
           }
