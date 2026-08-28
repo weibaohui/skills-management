@@ -92,6 +92,16 @@ const ZH = {
   tokenLabel: '访问令牌（私有仓库需要）',
   tokenConfigured: '已配置',
   clearToken: '清除',
+  shareBtn: '分享',
+  shareTitle: '分享技能到官方仓库',
+  shareHintPatMissing: '尚未配置访问令牌：先在 ⚙ 市场设置 中保存 GitCode 令牌，AI 才能以你的身份提交 PR。',
+  shareHint: 'AI 将读取本机令牌，fork 官方仓库 → 建分支 → 提交该技能目录 → 创建 PR。确认或修改提示词后，复制到当前会话发送执行。',
+  shareParamName: '技能名',
+  shareParamDir: '本机目录',
+  shareParamRemote: '目标路径',
+  shareParamVersion: '版本',
+  copyPrompt: '复制提示词',
+  promptCopied: '提示词已复制，粘贴到输入框发送即可执行',
   repoMissing: '尚未克隆，点「立即同步」拉取',
   backSources: '← 按来源',
   backMarketCards: '← 来源卡片',
@@ -174,6 +184,16 @@ const EN = {
   tokenLabel: 'Access token (private repos)',
   tokenConfigured: 'configured',
   clearToken: 'Clear',
+  shareBtn: 'Share',
+  shareTitle: 'Share skill to the official repo',
+  shareHintPatMissing: 'No access token configured — save a GitCode token in ⚙ Market Settings first so the AI can open the PR as you.',
+  shareHint: 'The AI will read the local token, fork the official repo, create a branch, commit this skill directory and open a PR. Review or edit the prompt, copy it into the current session and send.',
+  shareParamName: 'Skill',
+  shareParamDir: 'Local directory',
+  shareParamRemote: 'Remote path',
+  shareParamVersion: 'Version',
+  copyPrompt: 'Copy prompt',
+  promptCopied: 'Prompt copied — paste into the composer and send',
   repoMissing: 'Not cloned yet — hit Sync now',
   backSources: '← By source',
   backMarketCards: '← Source cards',
@@ -227,6 +247,33 @@ const EN = {
 }
 
 // ── Pure helpers ────────────────────────────────────────────────────────
+
+/** ntd ActionButton 同款 {{key}} 替换:split/join 规避正则元字符 */
+function substituteParams(template, params) {
+  let out = template
+  for (const [key, value] of Object.entries(params)) {
+    out = out.split(`{{${key}}}`).join(String(value))
+  }
+  return out
+}
+
+const SHARE_PROMPT_ZH = `请把本机的一个 Claude 技能分享到官方仓库并创建 PR，步骤：
+1. 读取 ~/.dsh/settings.yaml 中 skills-management.market 段的 token（GitCode 个人访问令牌）。
+2. 使用该 token 调用 GitCode API：fork 仓库 https://gitcode.com/weibaohui/ntd-resource（若已 fork 则复用）。
+3. 在 fork 中基于 main 创建分支 share/{{skillName}}。
+4. 把本机目录 {{resourceDir}} 下的全部文件提交到分支的 {{remotePath}} 路径下（整目录复制，保持结构）。
+5. 创建从该分支指向 weibaohui/ntd-resource:main 的 PR，标题「skill: {{skillName}}」，正文简述该技能用途。
+6. 汇报 PR 链接；若任一步失败，说明原因并停止，不要伪造结果。
+技能：{{skillName}}（版本 {{version}}）`
+
+const SHARE_PROMPT_EN = `Share a local Claude skill to the official repo and open a PR:
+1. Read the token (GitCode PAT) from the skills-management.market section of ~/.dsh/settings.yaml.
+2. Using that token via the GitCode API: fork https://gitcode.com/weibaohui/ntd-resource (reuse an existing fork).
+3. Create branch share/{{skillName}} off main in the fork.
+4. Commit every file under local directory {{resourceDir}} to {{remotePath}} in that branch (whole directory, structure preserved).
+5. Open a PR from the branch to weibaohui/ntd-resource:main titled "skill: {{skillName}}" with a short description.
+6. Report the PR URL; if any step fails, explain and stop — never fake a result.
+Skill: {{skillName}} (version {{version}})`
 
 const API = '/skills-management/api'
 
@@ -390,7 +437,7 @@ function SourceFilter({ rows, value, onChange, t }) {
 
 // ── Skill / executor cards ───────────────────────────────────────────────
 
-function SkillCard({ row, s, t, onOpen, onInstall, onDelete }) {
+function SkillCard({ row, s, t, onOpen, onInstall, onDelete, onShare }) {
   const name = shortName(s.name)
   return h('div', { className: 'sk-card', role: 'button', tabIndex: 0,
       onClick: () => onOpen(s),
@@ -410,7 +457,9 @@ function SkillCard({ row, s, t, onOpen, onInstall, onDelete }) {
         row.key !== 'dsh' && h(ButtonLite, { primary: true, small: true,
           onClick: e => { e.stopPropagation(); onInstall(row, s.installName || s.name) } }, t('toDsh')),
         (row.deletable !== false && !row.readOnly) && h(ButtonLite, { danger: true, small: true,
-          onClick: e => { e.stopPropagation(); onDelete(row, s.name) } }, t('deleteBtn')))))
+          onClick: e => { e.stopPropagation(); onDelete(row, s.name) } }, t('deleteBtn')),
+        onShare && h(ButtonLite, { small: true, title: t('shareBtn'),
+          onClick: e => { e.stopPropagation(); onShare(row, s) } }, '\u29C4'))))
 }
 
 /** Tiny variant buttons before P.Button availability resolution settles —
@@ -563,6 +612,33 @@ function InToast({ text }) {
   return h('div', { className: 'sk-toast' }, text)
 }
 
+/** ntd ActionButton 同款分享抽屉:可编辑提示词 + 参数预览 + 复制到会话执行。 */
+function ShareSkillDialog({ t, params, onClose, onToast }) {
+  const isZh = (typeof navigator !== 'undefined' && /zh/i.test(String(navigator.language || '')))
+  const [prompt, setPrompt] = useState(substituteParams(isZh ? SHARE_PROMPT_ZH : SHARE_PROMPT_EN, params))
+  const [hasToken, setHasToken] = useState(null)
+  useEffect(() => {
+    getJson(API + '/market/status').then(d => setHasToken(d.hasToken === true)).catch(() => setHasToken(false))
+  }, [])
+  const row = (label, value) => h('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 12, padding: '3px 0' } },
+    h('span', { className: 'sk-dir' }, label), h('span', { className: 'sk-hint', style: { wordBreak: 'break-all', textAlign: 'right' } }, value))
+  const copy = () => {
+    navigator.clipboard.writeText(prompt).then(() => onToast(t('promptCopied'))).catch(() => {})
+  }
+  return h(SkDialog, { title: t('shareTitle'), onClose, wide: true },
+    h('div', { style: { display: 'flex', flexDirection: 'column', gap: 10, minWidth: 380 } },
+      h('div', { className: 'sk-hint' }, hasToken === false ? t('shareHintPatMissing') : t('shareHint')),
+      h('div', null,
+        row(t('shareParamName'), params.skillName),
+        row(t('shareParamVersion'), params.version || '-'),
+        row(t('shareParamDir'), params.resourceDir),
+        row(t('shareParamRemote'), params.remotePath)),
+      h('textarea', { className: 'sk-input', value: prompt, onChange: e => setPrompt(e.target.value),
+        style: { width: '100%', minHeight: 190, resize: 'vertical', fontFamily: 'var(--dsw-font-family)', lineHeight: 1.6 } }),
+      h('div', { className: 'sk-dlg-foot', style: { marginTop: 0 } },
+        h(ButtonLite, { primary: true, onClick: copy }, t('copyPrompt')))))
+}
+
 /** Market sync settings: status card, sync action, editable url/branch. */
 function MarketSettingsDialog({ t, onClose, onToast, onSynced }) {
   const [status, setStatus] = useState(null)
@@ -691,7 +767,7 @@ function CardsView({ executors, t, onEnter, onBrowseAll }) {
   ]
 }
 
-function AllSkillsView({ executors, searchText, sourceFilter, t, onSearch, onFilter, onBack, onOpen, onInstall, onDelete }) {
+function AllSkillsView({ executors, searchText, sourceFilter, t, onSearch, onFilter, onBack, onOpen, onInstall, onDelete, onShare }) {
   const pending = executors.some(x => x.dirExists && !Array.isArray(x.skills))
   if (pending) return h(Spinner, { label: t('loadingCatalogs') })
   let items = []
@@ -712,10 +788,10 @@ function AllSkillsView({ executors, searchText, sourceFilter, t, onSearch, onFil
     !items.length
       ? h(Empty, null, t('emptySearch'))
       : h('div', { className: 'sk-grid' }, items.map(({ row, s }) =>
-          h(SkillCard, { key: row.key + '/' + s.name, row, s, t, onOpen, onInstall, onDelete })))]
+          h(SkillCard, { key: row.key + '/' + s.name, row, s, t, onOpen, onInstall, onDelete, onShare })))]
 }
 
-function DrillInView({ row, searchText, t, onSearch, onBack, onOpen, onInstall, onDelete }) {
+function DrillInView({ row, searchText, t, onSearch, onBack, onOpen, onInstall, onDelete, onShare }) {
   if (!row) return null
   if (!row.dirExists) {
     return [
@@ -740,7 +816,7 @@ function DrillInView({ row, searchText, t, onSearch, onBack, onOpen, onInstall, 
     !skills.length
       ? h(Empty, null, searchText ? t('emptySearch') : t('emptySkillsIn', { label: row.label }))
       : h(PagedGrid, { key: 'ed' + row.key + searchText, items: skills, t,
-          render: s => h(SkillCard, { key: s.name, row, s, t, onOpen, onInstall, onDelete }) }),
+          render: s => h(SkillCard, { key: s.name, row, s, t, onOpen, onInstall, onDelete, onShare }) }),
   ]
 }
 
@@ -764,6 +840,7 @@ function SkillsPage({ t, onClose, embedded }) {
   const [filterExecutor, setFilterExecutor] = useState('all')
   const [sourceFilter, setSourceFilter] = useState('all')
   const [marketSettingsOpen, setMarketSettingsOpen] = useState(false)
+  const [shareParams, setShareParams] = useState(null)
   const [marketToast, setMarketToast] = useState(null)
   const [marketView, setMarketView] = useState('cards')
   const [marketDrill, setMarketDrill] = useState(null)
@@ -821,6 +898,19 @@ function SkillsPage({ t, onClose, embedded }) {
   const row = filterExecutor !== 'all' ? executors.find(x => x.key === filterExecutor) : null
 
   const openDetail = (s, executorKey) => setSel({ name: s.name, executorKey })
+  const openShare = (row, s) => {
+    const skillName = shortName(s.name)
+    const dir = s.__dir || (row && row.dir ? row.dir + (s.relPath ? '/' + s.relPath : '/' + skillName) : '')
+    if (!dir) return
+    setShareParams({
+      skillName,
+      version: s.version || '',
+      resourceDir: dir,
+      remotePath: row && row.key && row.key !== 'dsh' && row.key !== '@market'
+        ? `skills/${row.key}/${skillName}/`
+        : `skills/${skillName}/`,
+    })
+  }
   const [pendingDelete, setPendingDelete] = useState(null)
   const [pendingInstall, setPendingInstall] = useState(null)
   const [toastText, setToastText] = useState(null)
@@ -852,14 +942,14 @@ function SkillsPage({ t, onClose, embedded }) {
   if (tab === 'executors') {
     if (filterExecutor !== 'all') {
       body = h(DrillInView, { row, searchText: searchDrill, t,
-        onSearch: setSearchDrill,
+        onSearch: setSearchDrill, onShare: openShare,
         onBack: () => { setFilterExecutor('all'); setSearchDrill('') },
         onOpen: s => openDetail(s, row?.key),
         onInstall: (r, name) => setPendingInstall({ row: r, name }),
         onDelete: (r, name) => setPendingDelete({ executor: r.key, name }) })
     } else if (executorView === 'all') {
       body = h(AllSkillsView, { executors, searchText: searchAll, sourceFilter, t,
-        onSearch: setSearchAll,
+        onSearch: setSearchAll, onShare: openShare,
         onFilter: v => { setSourceFilter(v); if (v !== 'all') { setFilterExecutor(v); setSearchAll(''); setSearchExec('') } },
         onBack: () => setExecutorView('cards'),
         onOpen: s => { const owner = executors.find(x => x.dirExists && Array.isArray(x.skills) && x.skills.some(k => k.name === s.name)); openDetail(s, owner ? owner.key : sourceFilter !== 'all' ? sourceFilter : 'dsh') },
@@ -953,6 +1043,10 @@ function SkillsPage({ t, onClose, embedded }) {
       onClose: () => setSel(null),
       onInstalled: () => { setSel(null); reloadExecutors(); setBaseStale(true) },
       onDeleted: () => { setSel(null); reloadExecutors(); setBaseStale(true) } }),
+    shareParams && h(ShareSkillDialog, {
+      t, params: shareParams, onClose: () => setShareParams(null),
+      onToast: (text) => { setMarketToast(text); setTimeout(() => setMarketToast(null), 3000) },
+    }),
     marketSettingsOpen && h(MarketSettingsDialog, {
       t,
       onClose: () => setMarketSettingsOpen(false),
