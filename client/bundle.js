@@ -1308,7 +1308,8 @@ window.__ModuleLoader__.load({
             id: CLIENT_NAME,
             order: 90,
             locale: NS,
-            label: (apiT) => (apiT && apiT('title')) || 'Skills Management',
+            // resolveSlotLabel 调用 label() 不传参;官方模式是自带绑定翻译的闭包
+            label: () => t('title'),
             inject: () => ({}),
           }, function SettingsSectionSlot() {
             return h(SettingsSlotComponent, { __t: t })
