@@ -1112,8 +1112,9 @@ module.exports = {
         locale: NS,
         label: () => t('title'),
         inject: () => ({ t }),
-      }, function FooterSlot() {
-        return h(FooterSlotComponent, { __t: t })
+      }, function FooterSlot(apiProps) {
+        // ownerProps (the sidebar's wide flag) land here — forward them
+        return h(FooterSlotComponent, { __t: t, wide: apiProps && apiProps.wide })
       }))
       } catch (e) { (globalThis.__skErrors = globalThis.__skErrors || []).push('footer:' + (e && e.message)); throw e }
     }, 'skills-management: sidebar footer action')
