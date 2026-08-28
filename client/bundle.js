@@ -1074,7 +1074,7 @@ window.__ModuleLoader__.load({
               h('span', { className: 'spacer' }),
               h(ButtonLite, { primary: true, onClick: () => setMarketView('all') }, `${t('browseAllMarket')} (${allMarket.length})`),
               h('span', { style: { width: 6 } }),
-              h(ButtonLite, { onClick: () => setMarketSettingsOpen(true), title: t('marketSettings') }, '\u2699 ', t('marketSettings'))),
+              h(ButtonLite, { onClick: () => setMarketSettingsOpen(true), title: t('marketSettings') }, t('marketSettings'))),
             base.sources.length
               ? h('div', { className: 'sk-src' }, base.sources.map(src =>
                   h('div', { key: src.source, className: 'sk-card', role: 'button', tabIndex: 0,
