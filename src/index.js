@@ -19,6 +19,8 @@ const fsP = require('node:fs/promises')
 const { basename, join, relative, resolve, sep } = require('node:path')
 const { homedir } = require('node:os')
 const YAML = require('yaml')
+let zod = null
+try { zod = require('zod') } catch { zod = null }
 
 const DEFAULT_MARKET_DIRS = [join(homedir(), '.ntd', 'bundled', 'skills')]
 const MARKET_SCAN_SKIP = new Set(['.git', 'node_modules'])
@@ -363,9 +365,27 @@ const DEFAULT_MARKET_SYNC = {
   syncOnStartup: true,
 }
 
-function mergeMarketSync(config, state) {
+/** User-settings namespace persisted through the host ctx.settings service
+ *  (local provider → $DSH_HOME/settings.yaml). Falls back to an in-memory
+ *  override sheet when the service is absent (tests, minimal compositions). */
+const MARKET_SETTINGS_NS = 'skills-management.market'
+
+function marketSettingsSchema() {
+  if (!zod) return null
+  return zod.object({
+    url: zod.string().min(1),
+    branch: zod.string().min(1),
+    gitBinary: zod.string().min(1),
+    repoDir: zod.string().optional(),
+    autoSync: zod.boolean(),
+    syncOnStartup: zod.boolean(),
+    token: zod.string().optional(),
+  })
+}
+
+function mergeMarketSync(config, overrides) {
   const cfg = (config && config.marketSync && typeof config.marketSync === 'object') ? config.marketSync : {}
-  return { ...DEFAULT_MARKET_SYNC, ...cfg, ...(state && state.settings ? state.settings : {}) }
+  return { ...DEFAULT_MARKET_SYNC, ...cfg, ...(overrides || {}) }
 }
 
 function contentTypeFor(p) {
@@ -386,11 +406,13 @@ module.exports = {
     const configMarketDirs = config.marketDirs !== undefined
       ? config.marketDirs.map((d) => resolve(expandTilde(d)))
       : undefined
-    const runtimeRepoDir = { current: undefined }  // set once state loads / on PUT
-    const effectiveRepoDir = () => resolve(expandTilde(
-      runtimeRepoDir.current !== undefined ? runtimeRepoDir.current
-        : config.marketRepoDir !== undefined ? config.marketRepoDir
-        : join(homedir(), '.ntd', 'bundled')))
+    const effectiveRepoDir = () => {
+      const eff = marketSettings()
+      return resolve(expandTilde(
+        typeof eff.repoDir === 'string' && eff.repoDir !== '' ? eff.repoDir
+          : config.marketRepoDir !== undefined ? config.marketRepoDir
+          : join(homedir(), '.ntd', 'bundled')))
+    }
     const marketRoots = () => configMarketDirs !== undefined ? configMarketDirs : [join(effectiveRepoDir(), 'skills')]
     const marketDirs = marketRoots  // scan/install/locate call sites read through this
     const installedDir = resolve(expandTilde(config.installedDir !== undefined ? config.installedDir : process.env.DSH_HOME ? join(process.env.DSH_HOME, 'skills') : join(homedir(), '.dsh', 'skills')))
@@ -544,22 +566,64 @@ module.exports = {
 
     // ── Market sync state (persisted next to the repo root) ──
     const marketStateFile = join(resolve(installedDir, '..'), 'skills-market-sync.json')
-    let marketState = { settings: {}, lastSyncAt: undefined, lastResult: undefined }
+    let marketState = { lastSyncAt: undefined, lastResult: undefined }
+    // User-facing settings live in the host settings service when present;
+    // the local json only carries runtime sync bookkeeping.
+    let settingsScope = null
+    const settingsOverrides = {}  // fallback sheet when the service is absent
     const marketStateLoaded = fsP.readFile(marketStateFile, 'utf8')
       .then(raw => {
         const parsed = JSON.parse(raw)
-        marketState = { settings: parsed.settings || {}, lastSyncAt: parsed.lastSyncAt, lastResult: parsed.lastResult }
-        if (typeof marketState.settings.repoDir === 'string' && marketState.settings.repoDir !== '') {
-          runtimeRepoDir.current = marketState.settings.repoDir
+        marketState = { lastSyncAt: parsed.lastSyncAt, lastResult: parsed.lastResult }
+        // one-time migration: pre-settings-service overrides move into the
+        // settings namespace, then are blanked in the legacy file
+        if (parsed.settings && typeof parsed.settings === 'object' && Object.keys(parsed.settings).length > 0) {
+          const legacy = parsed.settings
+          Promise.resolve().then(async () => {
+            await marketStateLoaded
+            if (settingsScope && typeof settingsScope.update === 'function') {
+              try {
+                await settingsScope.update(legacy)
+                await fsP.writeFile(marketStateFile, JSON.stringify(marketState, null, 2), { mode: 0o600 })
+              } catch (e) { ctx.logger.warn(`skills-management: legacy settings migration: ${e && e.message}`) }
+            } else {
+              Object.assign(settingsOverrides, legacy)
+            }
+          })
         }
       })
       .catch(() => {})
+    const baseSettings = () => {
+      const cfg = (config.marketSync && typeof config.marketSync === 'object') ? config.marketSync : {}
+      const base = { ...DEFAULT_MARKET_SYNC }
+      for (const key of ['url', 'branch', 'gitBinary', 'autoSync', 'syncOnStartup']) {
+        if (cfg[key] !== undefined) base[key] = cfg[key]
+      }
+      if (config.marketRepoDir !== undefined) base.repoDir = resolve(expandTilde(config.marketRepoDir))
+      return base
+    }
+    try {
+      if (ctx.inject && typeof ctx.inject === 'function') {
+        ctx.inject(['settings'], (settingsCtx) => {
+          const schema = marketSettingsSchema()
+          if (schema && settingsCtx && settingsCtx.settings && typeof settingsCtx.settings.register === 'function') {
+            try { settingsScope = settingsCtx.settings.register(MARKET_SETTINGS_NS, schema, { base: baseSettings() }) } catch (e) { ctx.logger.warn(`skills-management: settings register: ${e && e.message}`) }
+          }
+        })
+      }
+    } catch (e) { ctx.logger.warn(`skills-management: settings inject: ${e && e.message}`) }
     const saveMarketState = async () => {
       // 0600: the state file may carry the access token
       try { await fsP.writeFile(marketStateFile, JSON.stringify(marketState, null, 2), { mode: 0o600 }) } catch {}
       try { await fsP.chmod(marketStateFile, 0o600) } catch {}
     }
-    const marketSettings = () => mergeMarketSync(config, marketState)
+    const marketSettings = () => {
+      if (settingsScope && typeof settingsScope.get === 'function') {
+        const v = settingsScope.get()
+        if (v && typeof v === 'object') return { ...baseSettings(), ...v }
+      }
+      return mergeMarketSync(config, settingsOverrides)
+    }
 
     let marketSyncRun = null
     const runMarketSync = async () => {
@@ -687,13 +751,15 @@ module.exports = {
             if (body.token === null || body.token === '') patch.token = undefined
             if (typeof body.repoDir === 'string' && body.repoDir !== '') {
               patch.repoDir = resolve(expandTilde(body.repoDir))
-              runtimeRepoDir.current = patch.repoDir
             }
             for (const key of ['autoSync', 'syncOnStartup']) {
               if (typeof body[key] === 'boolean') patch[key] = body[key]
             }
-            marketState.settings = { ...marketState.settings, ...patch }
-            await saveMarketState()
+            if (settingsScope && typeof settingsScope.update === 'function') {
+              await settingsScope.update(patch)
+            } else {
+              Object.assign(settingsOverrides, patch)
+            }
             const eff = marketSettings()
             const { token, ...safe } = eff  // token 只写不回读
             sendJson(res, 200, { settings: safe, hasToken: typeof token === 'string' && token !== '' })

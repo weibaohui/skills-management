@@ -1045,9 +1045,12 @@ window.__ModuleLoader__.load({
       useEffect(ensureStyles, [])
       const t = props.__t
       const labelText = t ? t('title') : 'Skills Market'
+      // The sidebar renders this entry with a `wide` owner prop: the collapsed
+      // rail passes false and shows the icon alone; expanded shows the label.
+      const wide = props.wide !== false
       return h('span', { style: { display: 'contents' } },
         h('button', { title: labelText, 'aria-label': labelText, onClick: () => panelStore.set(!panelStore.open),
-            style: footerStyle() }, '\u{1F3AF} ', labelText),
+            style: footerStyle() }, '\u{1F3AF}', wide ? ' ' + labelText : ''),
         open && (() => {
           const page = h(SkillsPage, { t, embedded: false, onClose: () => panelStore.set(false) })
           // Fullscreen: portal the fixed-position page to <body> so no sidebar

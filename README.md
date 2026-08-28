@@ -50,7 +50,9 @@ npm run build:client   # 从 client/index.js 构建 client/bundle.js
 
 ## 依赖
 
-运行时只依赖 `yaml`（frontmatter 解析）。零 `@deepseek-ai/dsh-*` 依赖——宿主半端经 `ctx.skills` / `ctx.webServer` 运行时服务访问 harness 能力。
+运行时依赖 `yaml`（frontmatter 解析）与 `zod`（用户设置 schema）。零 `@deepseek-ai/dsh-*` 硬依赖——宿主半端经 `ctx.skills` / `ctx.webServer` / `ctx.inject(['settings'])` 运行时服务访问 harness 能力。
+
+**设置存储**：市场同步的用户设置（url/分支/本地目录/token/自动同步）注册为宿主 `ctx.settings` 命名空间 `skills-management.market`（zod schema；cordis.yml 的 `marketSync`/`marketRepoDir` 作为 composition base 层，UI 修改写入用户层，本地 provider 持久化于 `$DSH_HOME/settings.yaml`）。settings 服务缺席的组合（如测试）自动回退到进程内覆盖表；同步记账（lastSyncAt/结果）仍在 `$DSH_HOME/skills-market-sync.json`，旧版设置一次性迁移。侧栏收起时入口仅显示图标（槽位 `wide` 属性），展开显示完整文字。
 
 ## License
 

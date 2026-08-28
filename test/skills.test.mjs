@@ -532,3 +532,53 @@ test('market repo dir is runtime-configurable and the scan follows it', async ()
     await rm(root, { recursive: true, force: true })
   }
 })
+
+test('market settings persist through the host settings service when present', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-market-settings-'))
+  try {
+    const registrations = []
+    const updates = []
+    const store = {}  // ns → resolved section
+    const ctx = {
+      skills: { registerProvider: (create) => { create({ signal: new AbortController().signal, invalidate: () => {} }) } },
+      webServer: { register: (route) => { globalThis.__settingsRoute = route.handler } },
+      effect: (fn) => fn(),
+      logger: { warn: () => {} },
+      inject: (deps, fn) => { registrations.push(deps); fn({ settings: {
+        register: (ns, schema, opts) => {
+          store[ns] = { ...opts.base }
+          return {
+            get: () => store[ns],
+            update: async (patch) => { updates.push(patch); Object.assign(store[ns], patch) },
+          }
+        },
+      } }) },
+    }
+    plugin.apply(ctx, {
+      marketRepoDir: join(root, 'checkout'),
+      marketSync: { url: 'https://example.com/x.git', syncOnStartup: false, autoSync: false },
+    })
+    assert.deepEqual(registrations, [['settings']], 'dynamically injects the settings service')
+
+    const call = (method, url, body) => new Promise((fulfil) => {
+      const chunks = []
+      const res = { writeHead() {}, end: (c) => fulfil(c ? JSON.parse(String(c)) : undefined) }
+      const req = new (require('node:events').EventEmitter)()
+      req.method = method; req.url = url; req.headers = {}
+      if (body !== undefined) setTimeout(() => { req.emit('data', Buffer.from(JSON.stringify(body))); req.emit('end') }, 0)
+      globalThis.__settingsRoute(req, res)
+    })
+
+    // 覆盖写入进入 settings 命名空间,回读来自 scope.get
+    const put = await call('PUT', '/skills-management/api/market/settings', { branch: 'dev', token: 't-1' })
+    assert.equal(put.settings.branch, 'dev')
+    assert.equal(put.settings.token, undefined, 'token never echoed')
+    assert.equal(put.hasToken, true)
+    assert.deepEqual(updates, [{ branch: 'dev', token: 't-1' }], 'routed through scope.update')
+    const st = await call('GET', '/skills-management/api/market/status')
+    assert.equal(st.branch, 'dev')
+    assert.equal(st.url, 'https://example.com/x.git', 'composition base preserved')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
