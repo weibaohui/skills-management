@@ -551,6 +551,7 @@ window.__ModuleLoader__.load({
       const [fileText, setFileText] = useState('')
       const [confirming, setConfirming] = useState(false)
       const [toast, setToast] = useState(false)
+      const meta = data?.meta || {}
       const row = sel.executorKey ? executors.find(x => x.key === sel.executorKey) : null
 
       useEffect(() => {
@@ -608,7 +609,6 @@ window.__ModuleLoader__.load({
         } catch (e) { alert(t('operationFailed') + ': ' + e.message) } finally { setInvBusy(false) }
       }
 
-      const meta = data?.meta || {}
       const files = data?.files || []
       const isMd = file ? file.path.endsWith('.md') : true
 
