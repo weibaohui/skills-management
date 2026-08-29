@@ -20,8 +20,21 @@ const fsP = require('node:fs/promises')
 const { basename, join, relative, resolve, sep } = require('node:path')
 const { homedir } = require('node:os')
 const YAML = require('yaml')
-let zod = null
-try { zod = require('zod') } catch { zod = null }
+// settings 服务要求 schemastery schema（可调用 + toJSON；zod 不兼容，register 会抛错被吞）。
+// 宿主沙箱内解析打包依赖可能抛 ERR_INTERNAL_ASSERTION（.pnpm 软链），因此优先沿
+// dsh 全局安装取 settings 服务自用的那份副本，本地开发/测试再退回标准 require。
+function loadSchemastery() {
+  const errors = []
+  const { createRequire } = require('node:module')
+  for (const prefix of [process.env.DSH_GLOBAL_PREFIX, join(homedir(), '.local')].filter(Boolean)) {
+    const hostCopy = join(prefix, 'lib', 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai', 'schemastery', 'lib', 'index.cjs')
+    try { return createRequire(hostCopy)(hostCopy) } catch (e) { errors.push(String(e && e.code || e)) }
+  }
+  try { return require('@deepseek-ai/schemastery') } catch (e) { errors.push(String(e && e.code || e)) }
+  if (process.env.SKILLS_SETTINGS_DEBUG) console.warn(`[skills-management] schemastery unavailable: ${errors.join(' | ')}`)
+  return null
+}
+const Schema = loadSchemastery()
 
 const DEFAULT_MARKET_DIRS = [join(homedir(), '.ntd', 'bundled', 'skills')]
 const MARKET_SCAN_SKIP = new Set(['.git', 'node_modules'])
@@ -374,15 +387,15 @@ const DEFAULT_MARKET_SYNC = {
 const MARKET_SETTINGS_NS = 'skills-management.market'
 
 function marketSettingsSchema() {
-  if (!zod) return null
-  return zod.object({
-    url: zod.string().min(1),
-    branch: zod.string().min(1),
-    gitBinary: zod.string().min(1),
-    repoDir: zod.string().optional(),
-    autoSync: zod.boolean(),
-    syncOnStartup: zod.boolean(),
-    token: zod.string().optional(),
+  if (!Schema) return null
+  return Schema.object({
+    url: Schema.string(),
+    branch: Schema.string(),
+    gitBinary: Schema.string(),
+    repoDir: Schema.string(),
+    autoSync: Schema.boolean(),
+    syncOnStartup: Schema.boolean(),
+    token: Schema.string(),
   })
 }
 
@@ -496,7 +509,7 @@ function contentTypeFor(p) {
 
 module.exports = {
   name: 'skills-management',
-  inject: ['skills', 'webServer'],
+  inject: ['skills', 'webServer', 'settings'],
   __internals: { extractFrontmatter, parseSkillMd, invocationPolicy, installDirName, isReadOnlySource, EXECUTOR_DEFS },
 
   apply(ctx, config = {}) {
@@ -705,16 +718,13 @@ module.exports = {
       if (config.marketRepoDir !== undefined) base.repoDir = resolve(expandTilde(config.marketRepoDir))
       return base
     }
-    try {
-      if (ctx.inject && typeof ctx.inject === 'function') {
-        ctx.inject(['settings'], (settingsCtx) => {
-          const schema = marketSettingsSchema()
-          if (schema && settingsCtx && settingsCtx.settings && typeof settingsCtx.settings.register === 'function') {
-            try { settingsScope = settingsCtx.settings.register(MARKET_SETTINGS_NS, schema, { base: baseSettings() }) } catch (e) { ctx.logger.warn(`skills-management: settings register: ${e && e.message}`) }
-          }
-        })
-      }
-    } catch (e) { ctx.logger.warn(`skills-management: settings inject: ${e && e.message}`) }
+    // settings 注册：静态 inject 已保证 ctx.settings 就绪（此前走动态 ctx.inject 且
+    // schema 用 zod——不兼容导致 register 静默失败，token 只能存内存、重启即失）
+    if (Schema && ctx.settings && typeof ctx.settings.register === 'function') {
+      try {
+        settingsScope = ctx.settings.register(MARKET_SETTINGS_NS, marketSettingsSchema(), { base: baseSettings() })
+      } catch (e) { ctx.logger.warn(`skills-management: settings register: ${e && e.message}`) }
+    }
     const saveMarketState = async () => {
       // 0600: the state file may carry the access token
       try { await fsP.writeFile(marketStateFile, JSON.stringify(marketState, null, 2), { mode: 0o600 }) } catch {}

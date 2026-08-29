@@ -73,7 +73,8 @@ async function writeSkill(base, rel, meta) {
 
 test('plugin exports the host-plane contract', () => {
   assert.equal(plugin.name, 'skills-management')
-  assert.deepEqual(plugin.inject, ['skills', 'webServer'])
+  // settings 静态注入：token/市场设置必须持久化到宿主 settings 服务
+  assert.deepEqual(plugin.inject, ['skills', 'webServer', 'settings'])
 })
 
 test('extractFrontmatter requires standalone delimiters', () => {
@@ -563,21 +564,20 @@ test('market settings persist through the host settings service when present', a
       webServer: { register: (route) => { globalThis.__settingsRoute = route.handler } },
       effect: (fn) => fn(),
       logger: { warn: () => {} },
-      inject: (deps, fn) => { registrations.push(deps); fn({ settings: {
-        register: (ns, schema, opts) => {
-          store[ns] = { ...opts.base }
-          return {
-            get: () => store[ns],
-            update: async (patch) => { updates.push(patch); Object.assign(store[ns], patch) },
-          }
-        },
-      } }) },
+      settings: { register: (ns, schema, opts) => {
+        registrations.push(ns)
+        store[ns] = { ...opts.base }
+        return {
+          get: () => store[ns],
+          update: async (patch) => { updates.push(patch); Object.assign(store[ns], patch) },
+        }
+      } },
     }
     plugin.apply(ctx, {
       marketRepoDir: join(root, 'checkout'),
       marketSync: { url: 'https://example.com/x.git', syncOnStartup: false, autoSync: false },
     })
-    assert.deepEqual(registrations, [['settings'], ['agents', 'agentDefaultModel', 'sessions']], 'dynamically injects settings + agent services')
+    assert.deepEqual(registrations, ['skills-management.market'], 'registers the market settings namespace on the static settings service')
 
     const call = (method, url, body) => new Promise((fulfil) => {
       const chunks = []
