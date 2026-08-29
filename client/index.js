@@ -364,6 +364,7 @@ const STYLE = `<style>
 .sk-overlay{position:fixed;inset:0;z-index:2147483000;background:var(--dsw-alias-bg-base);overflow:auto;padding:20px 26px}
 .sk-tabs{display:flex;gap:6px;border-bottom:1px solid var(--dsw-alias-border-l2);padding-bottom:10px}
 .sk-toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.sk-body{display:flex;flex-direction:column;gap:14px}
 .sk-inv-toggle{display:inline-flex;gap:8px;align-items:center}
 .spacer{flex:1}
 .sk-hint{color:var(--dsw-alias-label-secondary)}
@@ -1146,7 +1147,7 @@ function SkillsPage({ t, onClose, embedded }) {
     h('div', { className: 'sk-tabs' }, ['executors', 'market'].map(key =>
       h('button', { key, className: 'sk-tabpill' + (tab === key ? ' on' : ''), style: pillStyle(tab === key),
         onClick: () => { setTab(key); setFilterExecutor('all'); setExecutorView('cards'); setSearchExec(''); setSearchDrill(''); setSearchAll(''); setMarketView('cards'); setMarketDrill(null); setSearchMarketDrill(''); setSearchMarketAll('') } }, t('tab' + key[0].toUpperCase() + key.slice(1))))),
-    h('div', null, body),
+    h('div', { className: 'sk-body' }, body),
     sel && h(DetailModal, { sel, executors, t,
       onClose: () => setSel(null),
       onInstalled: () => { setSel(null); reloadExecutors(); setBaseStale(true) },
