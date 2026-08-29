@@ -172,6 +172,10 @@ window.__ModuleLoader__.load({
       preview: '文件预览',
       content: '内容',
       activeInDsh: '已在 DSH 生效',
+      invocationToggle: '模型可调用',
+      invocationOn: '模型可见',
+      invocationOff: '已从模型目录隐藏',
+      invocationHint: '关闭后技能保留在库里，但不再注入对话目录（skill 工具也调不到）',
       pathLabel: '路径',
       meTag: '本机',
     }
@@ -270,6 +274,10 @@ window.__ModuleLoader__.load({
       preview: 'File preview',
       content: 'Content',
       activeInDsh: 'active in DSH',
+      invocationToggle: 'Model-invocable',
+      invocationOn: 'model-visible',
+      invocationOff: 'hidden from model catalog',
+      invocationHint: 'When off, the skill stays in the library but is not injected into conversation catalogs',
       pathLabel: 'Path',
       meTag: 'me',
     }
@@ -356,6 +364,7 @@ window.__ModuleLoader__.load({
     .sk-overlay{position:fixed;inset:0;z-index:2147483000;background:var(--dsw-alias-bg-base);overflow:auto;padding:20px 26px}
     .sk-tabs{display:flex;gap:6px;border-bottom:1px solid var(--dsw-alias-border-l2);padding-bottom:10px}
     .sk-toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+    .sk-inv-toggle{display:inline-flex;gap:8px;align-items:center}
     .spacer{flex:1}
     .sk-hint{color:var(--dsw-alias-label-secondary)}
     .sk-dir{color:var(--dsw-alias-label-tertiary);font-size:var(--dsw-font-xs-13,12px)}
@@ -586,6 +595,19 @@ window.__ModuleLoader__.load({
         }).catch(() => {})
       }
 
+      // 治理键开关（dsh 原生 disable-model-invocation）：只对用户库（dsh 行）技能开放
+      const [invBusy, setInvBusy] = useState(false)
+      const modelVisible = meta['disable-model-invocation'] !== true
+      const toggleInvocation = async () => {
+        setInvBusy(true)
+        try {
+          const r = await fetch(API + '/invocation', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: sel.name, modelInvocable: !modelVisible }) })
+          if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status)
+          const q = `?name=${encodeURIComponent(sel.name)}${sel.executorKey ? '&executor=' + encodeURIComponent(sel.executorKey) : ''}`
+          getJson(API + '/detail' + q).then(d => { setData(d) }).catch(() => {})
+        } catch (e) { alert(t('operationFailed') + ': ' + e.message) } finally { setInvBusy(false) }
+      }
+
       const meta = data?.meta || {}
       const files = data?.files || []
       const isMd = file ? file.path.endsWith('.md') : true
@@ -597,6 +619,10 @@ window.__ModuleLoader__.load({
                 h('div', { className: 'sk-toolbar' },
                   row && row.key !== 'dsh' && h(P.Button, { variant: 'primary', size: 'sm', onClick: doInstall }, `${t('installFrom', { label: row.label })}`),
                   row && row.key === 'dsh' && h(Tag, { tone: 'ok' }, t('activeInDsh')),
+                  row && row.key === 'dsh' && h('span', { className: 'sk-inv-toggle', title: t('invocationHint') },
+                    h('span', { className: 'sk-dir' }, t('invocationToggle')),
+                    h(P.Button, { size: 'sm', variant: modelVisible ? 'outline' : 'primary', disabled: invBusy, onClick: toggleInvocation },
+                      modelVisible ? t('invocationOn') : t('invocationOff'))),
                   row && row.readOnly && h(Tag, { tone: 'danger' }, t('readOnlyTag')),
                   h(P.Button, { variant: 'outline', size: 'sm', onClick: copyContent }, t('copy')),
                   h('span', { className: 'spacer' }),
