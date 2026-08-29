@@ -163,6 +163,11 @@ const ZH = {
   content: '内容',
   activeInDsh: '已在 DSH 生效',
   invocationToggle: '模型可调用',
+  hiddenTag: '已隐藏',
+  hideAction: '隐藏',
+  restoreAction: '恢复可见',
+  modelVisibleTag: '模型可见',
+  detailHideAction: '在模型目录隐藏',
   invocationOn: '模型可见',
   invocationOff: '已从模型目录隐藏',
   invocationHint: '关闭后技能保留在库里，但不再注入对话目录（skill 工具也调不到）',
@@ -265,6 +270,11 @@ const EN = {
   content: 'Content',
   activeInDsh: 'active in DSH',
   invocationToggle: 'Model-invocable',
+  hiddenTag: 'hidden',
+  hideAction: 'Hide',
+  restoreAction: 'Restore',
+  modelVisibleTag: 'model-visible',
+  detailHideAction: 'Hide from model catalog',
   invocationOn: 'model-visible',
   invocationOff: 'hidden from model catalog',
   invocationHint: 'When off, the skill stays in the library but is not injected into conversation catalogs',
@@ -471,7 +481,7 @@ function SourceFilter({ rows, value, onChange, t }) {
 
 // ── Skill / executor cards ───────────────────────────────────────────────
 
-function SkillCard({ row, s, t, onOpen, onInstall, onDelete, onShare }) {
+function SkillCard({ row, s, t, onOpen, onInstall, onDelete, onShare, onToggleVisible }) {
   const name = shortName(s.name)
   return h('div', { className: 'sk-card', role: 'button', tabIndex: 0,
       onClick: () => onOpen(s),
@@ -486,10 +496,15 @@ function SkillCard({ row, s, t, onOpen, onInstall, onDelete, onShare }) {
       h('div', { className: 'sk-chips' },
         h(Tag, null, row.label),
         row.readOnly && h(Tag, { tone: 'danger' }, t('readOnlyTag')),
-        s.version && h(Tag, { tone: 'accent' }, 'v' + s.version)),
+        s.version && h(Tag, { tone: 'accent' }, 'v' + s.version),
+        row.key === 'dsh' && s.modelInvocable === false && h(Tag, { tone: 'danger' }, t('hiddenTag'))),
       h('div', { className: 'sk-rowbtns' },
         row.key !== 'dsh' && h(ButtonLite, { primary: true, small: true,
           onClick: e => { e.stopPropagation(); onInstall(row, s.installName || s.name) } }, t('toDsh')),
+        row.key === 'dsh' && h(ButtonLite, { small: true,
+          title: s.modelInvocable === false ? t('restoreAction') : t('hideAction'),
+          onClick: e => { e.stopPropagation(); onToggleVisible(row, s.name, s.modelInvocable === false) } },
+          s.modelInvocable === false ? t('restoreAction') : t('hideAction')),
         (row.deletable !== false && !row.readOnly) && h(ButtonLite, { danger: true, small: true,
           onClick: e => { e.stopPropagation(); onDelete(row, s.name) } }, t('deleteBtn')),
         onShare && h(ButtonLite, { small: true, title: t('shareBtn'),
@@ -611,8 +626,9 @@ function DetailModal({ sel, executors, t, onClose, onInstalled, onDeleted }) {
               row && row.key === 'dsh' && h(Tag, { tone: 'ok' }, t('activeInDsh')),
               row && row.key === 'dsh' && h('span', { className: 'sk-inv-toggle', title: t('invocationHint') },
                 h('span', { className: 'sk-dir' }, t('invocationToggle')),
-                h(P.Button, { size: 'sm', variant: modelVisible ? 'outline' : 'primary', disabled: invBusy, onClick: toggleInvocation },
-                  modelVisible ? t('invocationOn') : t('invocationOff'))),
+                modelVisible ? h(Tag, { tone: 'ok' }, t('modelVisibleTag')) : h(Tag, { tone: 'danger' }, t('hiddenTag')),
+                h(P.Button, { size: 'sm', variant: 'outline', disabled: invBusy, onClick: toggleInvocation },
+                  modelVisible ? t('detailHideAction') : t('restoreAction'))),
               row && row.readOnly && h(Tag, { tone: 'danger' }, t('readOnlyTag')),
               h(P.Button, { variant: 'outline', size: 'sm', onClick: copyContent }, t('copy')),
               h('span', { className: 'spacer' }),
@@ -847,7 +863,7 @@ function CardsView({ executors, t, onEnter, onBrowseAll }) {
   ]
 }
 
-function AllSkillsView({ executors, searchText, sourceFilter, t, onSearch, onFilter, onBack, onOpen, onInstall, onDelete, onShare }) {
+function AllSkillsView({ executors, searchText, sourceFilter, t, onSearch, onFilter, onBack, onOpen, onInstall, onDelete, onShare, onToggleVisible }) {
   const pending = executors.some(x => x.dirExists && !Array.isArray(x.skills))
   if (pending) return h(Spinner, { label: t('loadingCatalogs') })
   let items = []
@@ -868,10 +884,10 @@ function AllSkillsView({ executors, searchText, sourceFilter, t, onSearch, onFil
     !items.length
       ? h(Empty, null, t('emptySearch'))
       : h('div', { className: 'sk-grid' }, items.map(({ row, s }) =>
-          h(SkillCard, { key: row.key + '/' + s.name, row, s, t, onOpen, onInstall, onDelete, onShare })))]
+          h(SkillCard, { key: row.key + '/' + s.name, row, s, t, onOpen, onInstall, onDelete, onShare, onToggleVisible })))]
 }
 
-function DrillInView({ row, searchText, t, onSearch, onBack, onOpen, onInstall, onDelete, onShare }) {
+function DrillInView({ row, searchText, t, onSearch, onBack, onOpen, onInstall, onDelete, onShare, onToggleVisible }) {
   if (!row) return null
   if (!row.dirExists) {
     return [
@@ -896,7 +912,7 @@ function DrillInView({ row, searchText, t, onSearch, onBack, onOpen, onInstall, 
     !skills.length
       ? h(Empty, null, searchText ? t('emptySearch') : t('emptySkillsIn', { label: row.label }))
       : h(PagedGrid, { key: 'ed' + row.key + searchText, items: skills, t,
-          render: s => h(SkillCard, { key: s.name, row, s, t, onOpen, onInstall, onDelete, onShare }) }),
+          render: s => h(SkillCard, { key: s.name, row, s, t, onOpen, onInstall, onDelete, onShare, onToggleVisible }) }),
   ]
 }
 
@@ -1026,7 +1042,13 @@ function SkillsPage({ t, onClose, embedded }) {
         onBack: () => { setFilterExecutor('all'); setSearchDrill('') },
         onOpen: s => openDetail(s, row?.key),
         onInstall: (r, name) => setPendingInstall({ row: r, name }),
-        onDelete: (r, name) => setPendingDelete({ executor: r.key, name }) })
+        onDelete: (r, name) => setPendingDelete({ executor: r.key, name }),
+        onToggleVisible: (r, name, modelInvocable) => {
+          fetch(API + '/invocation', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, modelInvocable }) })
+            .then(() => getJson(API + '/executors?executor=' + encodeURIComponent(r.key))
+              .then(d => setExecutors(rows => rows.map(x => x.key === d.executor.key ? d.executor : x))))
+            .catch(() => {})
+        } })
     } else if (executorView === 'all') {
       body = h(AllSkillsView, { executors, searchText: searchAll, sourceFilter, t,
         onSearch: setSearchAll, onShare: openShare,
@@ -1034,7 +1056,13 @@ function SkillsPage({ t, onClose, embedded }) {
         onBack: () => setExecutorView('cards'),
         onOpen: s => { const owner = executors.find(x => x.dirExists && Array.isArray(x.skills) && x.skills.some(k => k.name === s.name)); openDetail(s, owner ? owner.key : sourceFilter !== 'all' ? sourceFilter : 'dsh') },
         onInstall: (r, name) => setPendingInstall({ row: r, name }),
-        onDelete: (r, name) => setPendingDelete({ executor: r.key, name }) })
+        onDelete: (r, name) => setPendingDelete({ executor: r.key, name }),
+        onToggleVisible: (r, name, modelInvocable) => {
+          fetch(API + '/invocation', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, modelInvocable }) })
+            .then(() => getJson(API + '/executors?executor=' + encodeURIComponent(r.key))
+              .then(d => setExecutors(rows => rows.map(x => x.key === d.executor.key ? d.executor : x))))
+            .catch(() => {})
+        } })
     } else {
       body = h(CardsView, { executors, t,
         onEnter: key => { setFilterExecutor(key); setSearchDrill('') },
