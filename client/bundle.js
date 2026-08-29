@@ -1127,7 +1127,7 @@ window.__ModuleLoader__.load({
             h('div', { className: 'sk-toolbar' },
               h('span', { className: 'sk-hint' }, t('marketCardsHint')),
               h('span', { className: 'spacer' }),
-              h(ButtonLite, { primary: true, onClick: () => setMarketView('all') }, `${t('browseAllMarket')} (${allMarket.length})`),
+              h(P.Button, { variant: 'primary', size: 'sm', onClick: () => setMarketView('all') }, `${t('browseAllMarket')} (${allMarket.length})`),
               h('span', { style: { width: 6 } }),
               h(ButtonLite, { onClick: () => setMarketSettingsOpen(true), title: t('marketSettings') }, t('marketSettings'))),
             base.sources.length
