@@ -577,7 +577,7 @@ test('market settings persist through the host settings service when present', a
       marketRepoDir: join(root, 'checkout'),
       marketSync: { url: 'https://example.com/x.git', syncOnStartup: false, autoSync: false },
     })
-    assert.deepEqual(registrations, ['skills-management.market'], 'registers the market settings namespace on the static settings service')
+    assert.deepEqual(registrations, ['skills-management-market'], 'registers the market settings namespace on the static settings service')
 
     const call = (method, url, body) => new Promise((fulfil) => {
       const chunks = []

@@ -384,7 +384,8 @@ const DEFAULT_MARKET_SYNC = {
 /** User-settings namespace persisted through the host ctx.settings service
  *  (local provider → $DSH_HOME/settings.yaml). Falls back to an in-memory
  *  override sheet when the service is absent (tests, minimal compositions). */
-const MARKET_SETTINGS_NS = 'skills-management.market'
+// 命名空间必须匹配 /^[a-z][a-z0-9-]*$/ —— 点号形式会被 settings 写入通道拒绝
+const MARKET_SETTINGS_NS = 'skills-management-market'
 
 function marketSettingsSchema() {
   if (!Schema) return null
