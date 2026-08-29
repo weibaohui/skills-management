@@ -163,7 +163,25 @@ test('apply registers a provider listing installed over market', async () => {
 
     const marketOne = await registered.get(byName['canvas-design'])
     assert.equal(marketOne.content, 'Body B')
-    assert.equal(marketOne.invocation.modelInvocable, true)
+    // 市场库存默认不进模型目录（货架定位）：浏览/安装/用户命令不受影响
+    assert.equal(marketOne.invocation.modelInvocable, false)
+    assert.equal(marketOne.invocation.userInvocable, true)
+    assert.equal(byName['canvas-design'].invocation.modelInvocable, false)
+    assert.equal(byName['doc-coauthoring'].invocation.modelInvocable, true) // 已安装的照旧
+
+    // config 逃生舱：marketModelInvocable: true 恢复旧行为
+    let registered2
+    plugin.apply({
+      skills: { registerProvider: (create) => { registered2 = create({ signal: new AbortController().signal, invalidate: () => {} }) } },
+      webServer: { register: () => () => {} },
+      effect: (fn) => (typeof fn === 'function' ? fn() : undefined),
+      logger: { warn: () => {} },
+    }, { marketDirs: [join(root, 'market')], installedDir: join(root, 'installed'), marketModelInvocable: true })
+    const candidates2 = await registered2.list()
+    const byName2 = Object.fromEntries(candidates2.map((candidate) => [candidate.name, candidate]))
+    assert.equal(byName2['canvas-design'].invocation.modelInvocable, true)
+    const marketBack = await registered2.get(byName2['canvas-design'])
+    assert.equal(marketBack.invocation.modelInvocable, true)
   } finally {
     await rm(root, { recursive: true, force: true })
   }

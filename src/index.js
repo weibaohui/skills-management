@@ -517,6 +517,9 @@ module.exports = {
     const marketDirs = marketRoots  // scan/install/locate call sites read through this
     const installedDir = resolve(expandTilde(config.installedDir !== undefined ? config.installedDir : process.env.DSH_HOME ? join(process.env.DSH_HOME, 'skills') : join(homedir(), '.dsh', 'skills')))
     const providerName = config.providerName !== undefined ? config.providerName : 'ntd-skills'
+    // 市场库存（数几千条）默认不进模型目录 available_skills —— 只作为可浏览/可安装的货架。
+    // 装到用户库（installedDir）后才对模型可见。config.marketModelInvocable: true 可恢复旧行为。
+    const marketModelInvocable = config.marketModelInvocable === true
 
     // ── Executor (on-machine source) rows ──
     // dsh first (its root is installedDir); then known defs minus disabled;
@@ -809,7 +812,7 @@ module.exports = {
             }
             const shortName = row.name.includes('/') ? row.name.split('/').pop() : row.name
             if (installed.some((e) => e.name === shortName)) continue
-            candidates.push(toCandidate(row, 'market', RANK_MARKET))
+            candidates.push(toCandidate(row, 'market', RANK_MARKET, { modelInvocable: marketModelInvocable }))
           }
           return candidates
         },
@@ -817,14 +820,21 @@ module.exports = {
           const entry = candidate.locator
           try {
             const row = await readSkillEntry({ ...entry, stat: entry.stat ?? (await fsP.stat(join(entry.dir, 'SKILL.md'))) })
-            return { name: row.name, description: row.description, whenToUse: typeof row.meta.whenToUse === 'string' ? row.meta.whenToUse : undefined, invocation: invocationPolicy(row.meta), source: candidate.source, provider: providerName, resourceBase: { kind: 'directory', path: entry.dir }, content: row.body, path: join(entry.dir, 'SKILL.md'), metadata: row.meta }
+            const invocation = candidate.source === 'market' && !marketModelInvocable
+              ? { modelInvocable: false, userInvocable: true }
+              : invocationPolicy(row.meta)
+            return { name: row.name, description: row.description, whenToUse: typeof row.meta.whenToUse === 'string' ? row.meta.whenToUse : undefined, invocation, source: candidate.source, provider: providerName, resourceBase: { kind: 'directory', path: entry.dir }, content: row.body, path: join(entry.dir, 'SKILL.md'), metadata: row.meta }
           } catch { return undefined }
         },
       }
     })
 
-    function toCandidate(row, source, rank) {
-      return { name: row.name, description: row.description, invocation: invocationPolicy(row.meta), source, provider: providerName, rank, locator: { dir: row.entry.dir, root: row.entry.root, relPath: row.entry.relPath, stat: row.entry.stat }, path: join(row.entry.dir, 'SKILL.md'), metadata: row.meta, whenToUse: typeof row.meta.whenToUse === 'string' ? row.meta.whenToUse : undefined, resourceBase: { kind: 'directory', path: row.entry.dir } }
+    // `invocationOverride.modelInvocable` 为 false 时该候选不进模型目录（available_skills），
+    // 但保留 userInvocable（UI 浏览 / 用户命令调用不受影响）。
+    function toCandidate(row, source, rank, invocationOverride) {
+      const base = invocationPolicy(row.meta)
+      const invocation = invocationOverride ? { ...base, ...invocationOverride } : base
+      return { name: row.name, description: row.description, invocation, source, provider: providerName, rank, locator: { dir: row.entry.dir, root: row.entry.root, relPath: row.entry.relPath, stat: row.entry.stat }, path: join(row.entry.dir, 'SKILL.md'), metadata: row.meta, whenToUse: typeof row.meta.whenToUse === 'string' ? row.meta.whenToUse : undefined, resourceBase: { kind: 'directory', path: row.entry.dir } }
     }
 
     ctx.effect(() => ctx.webServer.register({
