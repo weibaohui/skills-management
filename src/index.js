@@ -316,6 +316,32 @@ function expandTilde(p) {
   return p === '~' || p.startsWith('~/') || p.startsWith('~\\') ? join(homedir(), p.slice(2)) : p
 }
 
+/**
+ * 切换 dsh 原生治理键 `disable-model-invocation`（docs/subsystems/skills.md）。
+ * modelInvocable=true 时移除该键；false 时写入 true。其余 frontmatter 键与正文原样保留。
+ */
+function setModelInvocable(content, modelInvocable) {
+  const lines = String(content || '').split(/\r?\n/)
+  if (lines[0] === undefined || lines[0].trim() !== '---') {
+    return modelInvocable ? content : `---\ndisable-model-invocation: true\n---\n\n${content}`
+  }
+  let closer = -1
+  for (let i = 1; i < lines.length; i += 1) {
+    if (lines[i].trim() === '---') { closer = i; break }
+  }
+  if (closer === -1) return content
+  let kept = lines.slice(1, closer).filter((l) => !/^disable-model-invocation\s*:/.test(l.trim()))
+  if (!modelInvocable) kept = [...kept, 'disable-model-invocation: true']
+  return [...lines.slice(0, 1), ...kept, ...lines.slice(closer)].join('\n')
+}
+
+async function atomicWriteJs(file, content) {
+  await fsP.mkdir(join(file, '..'), { recursive: true })
+  const temp = join(join(file, '..'), `.${randomUUID()}.tmp`)
+  await fsP.writeFile(temp, content, 'utf8')
+  await fsP.rename(temp, file)
+}
+
 // ── Market git sync (ntd git_sync semantics: clone --depth 1 first, then
 // fetch + reset --hard so the remote always wins and local damage heals) ──
 
@@ -1015,6 +1041,22 @@ module.exports = {
             const body = await readJsonBody(req)
             if (typeof body.name !== 'string' || body.name === '') { sendJson(res, 400, { error: 'body must provide name' }); return }
             sendJson(res, 200, await deleteSkill(body.name, typeof body.executor === 'string' ? body.executor : undefined))
+            return
+          }
+
+          // PUT /skills-management/api/invocation {name, modelInvocable} → 治理键开关
+          // dsh 原生 frontmatter 键（docs/subsystems/skills.md）：disable-model-invocation。
+          // 只改用户库技能；其他键原样保留；写完 invalidate 让目录即时生效。
+          if (req.method === 'PUT' && apiPath.endsWith('/skills-management/api/invocation')) {
+            const body = await readJsonBody(req)
+            if (typeof body.name !== 'string' || body.name === '') { sendJson(res, 400, { error: 'body must provide name' }); return }
+            if (typeof body.modelInvocable !== 'boolean') { sendJson(res, 400, { error: 'body must provide modelInvocable boolean' }); return }
+            const skillDir = await resolveSkillDir(installedDir, body.name)
+            const file = join(skillDir, 'SKILL.md')
+            const updated = setModelInvocable(await fsP.readFile(file, 'utf8'), body.modelInvocable)
+            await atomicWriteJs(file, updated)
+            invalidate()
+            sendJson(res, 200, { name: body.name, modelInvocable: body.modelInvocable })
             return
           }
 

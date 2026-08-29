@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, writeFile, rm, stat } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, rm, stat, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { EventEmitter } from 'node:events'
@@ -638,4 +638,28 @@ test('share/run executes a real process in the skill directory', async () => {
     delete process.env.SKILLS_DSH_BIN
     await rm(root, { recursive: true, force: true })
   }
+})
+
+test('invocation toggle writes the native frontmatter key and preserves the rest', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skills-inv-'))
+  try {
+    await mkdir(join(root, 'installed', 'my-skill'), { recursive: true })
+    await writeFile(join(root, 'installed', 'my-skill', 'SKILL.md'),
+      '---\nname: my-skill\ndescription: d\nversion: "2.0"\n---\n\nbody')
+    const env = setupPlugin({ installedDir: join(root, 'installed'), marketDirs: [join(root, 'market')] })
+    const call = env.call
+    const put = await call('PUT', '/skills-management/api/invocation', { name: 'my-skill', modelInvocable: false })
+    assert.equal(put.status, 200)
+    let raw = await readFile(join(root, 'installed', 'my-skill', 'SKILL.md'), 'utf8')
+    assert.match(raw, /disable-model-invocation: true/)
+    assert.match(raw, /version: "2\.0"/) // 其余键保留
+    // detail 回读 meta 带 disable-model-invocation
+    const detail = await call('GET', '/skills-management/api/detail?name=my-skill')
+    assert.equal(detail.payload.meta['disable-model-invocation'], true)
+    // 切回
+    await call('PUT', '/skills-management/api/invocation', { name: 'my-skill', modelInvocable: true })
+    raw = await readFile(join(root, 'installed', 'my-skill', 'SKILL.md'), 'utf8')
+    assert.doesNotMatch(raw, /disable-model-invocation/)
+    assert.match(raw, /version: "2\.0"/)
+  } finally { await rm(root, { recursive: true, force: true }) }
 })
