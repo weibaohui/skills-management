@@ -8,7 +8,7 @@ import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
 const plugin = require('../src/index.js')
-const { extractFrontmatter, parseSkillMd, invocationPolicy, installDirName, isReadOnlySource, EXECUTOR_DEFS } = plugin.__internals
+const { extractFrontmatter, parseSkillMd, invocationPolicy, installDirName, EXECUTOR_DEFS } = plugin.__internals
 
 // ── HTTP handler harness ────────────────────────────────────────────────
 
@@ -241,11 +241,11 @@ test('scan skips .git and node_modules, resolves through nesting', async () => {
 
 // ── Executor sources (on-machine skills dirs, ntd source-table style) ──
 
-test('executor catalog covers known agents and marks read-only sources', () => {
+test('executor catalog covers known agents and no default source is read-only', () => {
   const keys = EXECUTOR_DEFS.map((d) => d.key)
   for (const expected of ['dsh', 'claudecode', 'zcode', 'codex', 'agents']) assert.ok(keys.includes(expected), `missing ${expected}`)
-  assert.ok(isReadOnlySource('agents'))
-  for (const def of EXECUTOR_DEFS.filter((d) => d.key !== 'agents')) assert.equal(def.readOnly === true, false, `${def.key} must not be read-only`)
+  // agents 根自治理键开关覆盖起不再只读（与用户库同权）；只读只来自 extraExecutors 的显式标记
+  for (const def of EXECUTOR_DEFS) assert.equal(def.readOnly === true, false, `${def.key} must not be read-only`)
 })
 
 test('GET /executors groups skills per on-machine source', async () => {
@@ -277,7 +277,7 @@ test('GET /executors groups skills per on-machine source', async () => {
     assert.equal(cc.skills[0].version, '1.0')
 
     const ag = rows.find((r) => r.key === 'agents')
-    assert.equal(ag.readOnly, true)
+    assert.equal(ag.readOnly, false) // agents 根自治理开关覆盖起可写
     assert.deepEqual(ag.skills.map((s) => s.name), ['bar'])
 
     const missing = rows.find((r) => r.key === 'codex') // no override, real ~/.codex may exist; only shape-check
@@ -367,19 +367,21 @@ test('DELETE is scoped to a source and refuses read-only ones', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-skills-del-'))
   try {
     await writeSkill(join(root, 'cc'), 'removable', { name: 'removable', description: 'x' })
-    await writeSkill(join(root, 'ag'), 'protected', { name: 'protected', description: 'x' })
+    await writeSkill(join(root, 'locked'), 'protected', { name: 'protected', description: 'x' })
     await writeSkill(join(root, 'installed'), 'local', { name: 'local', description: 'x' })
 
     const env = setupPlugin({
       marketDirs: [join(root, 'market')],
       installedDir: join(root, 'installed'),
-      executorDirs: { claudecode: join(root, 'cc'), agents: join(root, 'ag') },
+      executorDirs: { claudecode: join(root, 'cc') },
+      // 只读语义仍保留给显式标记的 extra 来源（agents 根自治理开关覆盖起不再只读）
+      extraExecutors: [{ key: 'locked', label: 'Locked', dir: join(root, 'locked'), readOnly: true }],
     })
 
-    const refused = await env.call('DELETE', '/skills-management/api', { name: 'protected', executor: 'agents' })
+    const refused = await env.call('DELETE', '/skills-management/api', { name: 'protected', executor: 'locked' })
     assert.equal(refused.status, 400)
     assert.match(refused.payload.error, /read-only/)
-    await assert.doesNotReject(stat(join(root, 'ag', 'protected')))
+    await assert.doesNotReject(stat(join(root, 'locked', 'protected')))
 
     const removed = await env.call('DELETE', '/skills-management/api', { name: 'removable', executor: 'claudecode' })
     assert.equal(removed.status, 200)

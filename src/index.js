@@ -66,14 +66,10 @@ const EXECUTOR_DEFS = [
   { key: 'pi', label: 'Pi', sub: '.pi/skills' },
   { key: 'mimo', label: 'Mimo', sub: '.local/share/mimocode/skills' },
   { key: 'zhanlu', label: 'ZhanLu', sub: '.local/share/zhanlu/skills' },
-  // agents is a read-only aggregation source in ntd semantics: visible,
-  // copyable out, but never deleted or overwritten from here.
-  { key: 'agents', label: 'Agents', sub: '.agents/skills', readOnly: true },
+  // agents 共享池曾是只读来源；治理键开关（disable-model-invocation）覆盖该根后
+  // "只读"名不副实——与 dsh 的 user-agents 内置根对齐，按普通可写来源对待。
+  { key: 'agents', label: 'Agents', sub: '.agents/skills' },
 ]
-
-function isReadOnlySource(key) {
-  return key === 'agents'
-}
 
 /** Target directory name when installing a (possibly nested) skill name. */
 function installDirName(fullName) {
@@ -537,7 +533,7 @@ function contentTypeFor(p) {
 module.exports = {
   name: 'skills-management',
   inject: ['skills', 'webServer', 'settings'],
-  __internals: { extractFrontmatter, parseSkillMd, invocationPolicy, installDirName, isReadOnlySource, EXECUTOR_DEFS },
+  __internals: { extractFrontmatter, parseSkillMd, invocationPolicy, installDirName, EXECUTOR_DEFS },
 
   apply(ctx, config = {}) {
     // Explicit marketDirs config wins; otherwise the scan follows the
