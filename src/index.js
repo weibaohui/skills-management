@@ -1046,17 +1046,26 @@ module.exports = {
 
           // PUT /skills-management/api/invocation {name, modelInvocable} → 治理键开关
           // dsh 原生 frontmatter 键（docs/subsystems/skills.md）：disable-model-invocation。
-          // 只改用户库技能；其他键原样保留；写完 invalidate 让目录即时生效。
+          // 解析范围：用户库（dsh）优先，找不到再查 ~/.agents/skills——dsh 的
+          // skill-filesystem 把 user-agents 作为内置根全量扫进模型目录，这个开关
+          // 同样管得住它们（其他键原样保留；写完靠宿主 watcher 失效，无需 invalidate）。
           if (req.method === 'PUT' && apiPath.endsWith('/skills-management/api/invocation')) {
             const body = await readJsonBody(req)
             if (typeof body.name !== 'string' || body.name === '') { sendJson(res, 400, { error: 'body must provide name' }); return }
             if (typeof body.modelInvocable !== 'boolean') { sendJson(res, 400, { error: 'body must provide modelInvocable boolean' }); return }
-            const skillDir = await resolveSkillDir(installedDir, body.name)
+            // 与 dsh skill-filesystem 的 user-agents 根同款解析
+            const agentsSkillsRoot = process.env.DSH_AGENTS_HOME !== undefined && process.env.DSH_AGENTS_HOME !== ''
+              ? join(resolve(expandTilde(process.env.DSH_AGENTS_HOME)), 'skills')
+              : join(homedir(), '.agents', 'skills')
+            let skillDir
+            let rootKey = 'dsh'
+            try { skillDir = await resolveSkillDir(installedDir, body.name) }
+            catch { skillDir = await resolveSkillDir(agentsSkillsRoot, body.name); rootKey = 'agents' }
             const file = join(skillDir, 'SKILL.md')
             const updated = setModelInvocable(await fsP.readFile(file, 'utf8'), body.modelInvocable)
             await atomicWriteJs(file, updated)
             invalidate()
-            sendJson(res, 200, { name: body.name, modelInvocable: body.modelInvocable })
+            sendJson(res, 200, { name: body.name, modelInvocable: body.modelInvocable, root: rootKey })
             return
           }
 

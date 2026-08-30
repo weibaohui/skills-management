@@ -663,3 +663,32 @@ test('invocation toggle writes the native frontmatter key and preserves the rest
     assert.match(raw, /version: "2\.0"/)
   } finally { await rm(root, { recursive: true, force: true }) }
 })
+
+test('PUT /invocation also covers the user-agents root (~/.agents/skills)', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'sk-inv-agents-'))
+  const prevAgents = process.env.DSH_AGENTS_HOME
+  process.env.DSH_AGENTS_HOME = home // 解析为 <home>/skills
+  try {
+    await writeSkill(join(home, 'skills'), 'agents-only-skill', { name: 'agents-only-skill', description: 'lives in the shared agents root' })
+    const { call } = setupPlugin({ installedDir: join(home, 'dsh-user-skills') }) // dsh 库里没有它
+    const off = await call('PUT', '/skills-management/api/invocation', { name: 'agents-only-skill', modelInvocable: false })
+    assert.equal(off.status, 200)
+    assert.equal(off.payload.root, 'agents')
+    const content = await readFile(join(home, 'skills', 'agents-only-skill', 'SKILL.md'), 'utf8')
+    assert.match(content, /disable-model-invocation: true/)
+    const on = await call('PUT', '/skills-management/api/invocation', { name: 'agents-only-skill', modelInvocable: true })
+    assert.equal(on.status, 200)
+    assert.doesNotMatch(await readFile(join(home, 'skills', 'agents-only-skill', 'SKILL.md'), 'utf8'), /disable-model-invocation/)
+    // dsh 用户库存在同名时优先改用户库（与 registry rank 一致）
+    await writeSkill(join(home, 'dsh-user-skills'), 'dual-skill', { name: 'dual-skill', description: 'in user lib' })
+    await writeSkill(join(home, 'skills'), 'dual-skill', { name: 'dual-skill', description: 'in agents root' })
+    const dual = await call('PUT', '/skills-management/api/invocation', { name: 'dual-skill', modelInvocable: false })
+    assert.equal(dual.payload.root, 'dsh')
+    assert.match(await readFile(join(home, 'dsh-user-skills', 'dual-skill', 'SKILL.md'), 'utf8'), /disable-model-invocation/)
+    assert.doesNotMatch(await readFile(join(home, 'skills', 'dual-skill', 'SKILL.md'), 'utf8'), /disable-model-invocation/)
+  } finally {
+    if (prevAgents === undefined) delete process.env.DSH_AGENTS_HOME
+    else process.env.DSH_AGENTS_HOME = prevAgents
+    await rm(home, { recursive: true, force: true })
+  }
+})

@@ -508,11 +508,11 @@ window.__ModuleLoader__.load({
             h(Tag, null, row.label),
             row.readOnly && h(Tag, { tone: 'danger' }, t('readOnlyTag')),
             s.version && h(Tag, { tone: 'accent' }, 'v' + s.version),
-            row.key === 'dsh' && s.modelInvocable === false && h(Tag, { tone: 'danger' }, t('hiddenTag'))),
+            (row.key === 'dsh' || row.key === 'agents') && s.modelInvocable === false && h(Tag, { tone: 'danger' }, t('hiddenTag'))),
           h('div', { className: 'sk-rowbtns' },
             row.key !== 'dsh' && h(ButtonLite, { primary: true, small: true,
               onClick: e => { e.stopPropagation(); onInstall(row, s.installName || s.name) } }, t('toDsh')),
-            row.key === 'dsh' && h(ButtonLite, { small: true,
+            (row.key === 'dsh' || row.key === 'agents') && h(ButtonLite, { small: true,
               title: s.modelInvocable === false ? t('restoreAction') : t('hideAction'),
               onClick: e => { e.stopPropagation(); onToggleVisible(row, s.name, s.modelInvocable === false) } },
               s.modelInvocable === false ? t('restoreAction') : t('hideAction')),
@@ -612,7 +612,8 @@ window.__ModuleLoader__.load({
         }).catch(() => {})
       }
 
-      // 治理键开关（dsh 原生 disable-model-invocation）：只对用户库（dsh 行）技能开放
+      // 治理键开关（dsh 原生 disable-model-invocation）：对用户库（dsh 行）和
+      // user-agents 根（agents 行——dsh 内置扫描 ~/.agents/skills）的技能开放
       const [invBusy, setInvBusy] = useState(false)
       const modelVisible = meta['disable-model-invocation'] !== true
       const toggleInvocation = async () => {
@@ -635,7 +636,7 @@ window.__ModuleLoader__.load({
                 h('div', { className: 'sk-toolbar' },
                   row && row.key !== 'dsh' && h(P.Button, { variant: 'primary', size: 'sm', onClick: doInstall }, `${t('installFrom', { label: row.label })}`),
                   row && row.key === 'dsh' && h(Tag, { tone: 'ok' }, t('activeInDsh')),
-                  row && row.key === 'dsh' && h('span', { className: 'sk-inv-toggle', title: t('invocationHint') },
+                  row && (row.key === 'dsh' || row.key === 'agents') && h('span', { className: 'sk-inv-toggle', title: t('invocationHint') },
                     h('span', { className: 'sk-dir' }, t('invocationToggle')),
                     modelVisible ? h(Tag, { tone: 'ok' }, t('modelVisibleTag')) : h(Tag, { tone: 'danger' }, t('hiddenTag')),
                     h(P.Button, { size: 'sm', variant: 'outline', disabled: invBusy, onClick: toggleInvocation },
