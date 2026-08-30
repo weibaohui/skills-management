@@ -3,7 +3,8 @@
 ntd 技能市场 for DeepSeek Harness：**一个页面管理本机所有技能**。
 
 - **执行器来源**（移植 ntd 来源表）：扫描本机各 coding agent 的 skills 目录（`~/.claude/skills`、`~/.zcode/skills`、`~/.codex/skills`、`~/.agents/skills` 等 16 个），全部展示、可详情、可单文件预览；`agents` 为只读来源；任意执行器技能可一键复制进 DSH 用户库供 `skill` 工具调用。软链布局（各执行器目录 symlink 共享池）完整支持。
-- **市场同步**：插件自己管理 ntd-resource 检出（ntd `git_sync` 同构）：首次 `git clone --depth 1`，更新 `fetch + reset --hard`（远程永远赢，本地误删误改自愈）；启动时后台静默同步 + 每日自动同步（可关）；gitcode 私有仓库支持 access token（只写不回读，状态文件 0600 权限，凭证不落 .git/config）。
+- **模型目录治理**（2026-08-29）：市场库存（6600+ 条）只作可浏览/可安装的货架，**不再注入对话的技能目录**（装进 DSH 用户库才对模型可见）；已装技能可在详情页用"模型可调用"开关切换原生 frontmatter 键 `disable-model-invocation`（其余键保留），卡片带"已隐藏"标记与隐藏/恢复按钮；市场 settings（含 access token）经宿主 settings 服务持久化到 `settings.yaml`，重启不再丢失。
+：插件自己管理 ntd-resource 检出（ntd `git_sync` 同构）：首次 `git clone --depth 1`，更新 `fetch + reset --hard`（远程永远赢，本地误删误改自愈）；启动时后台静默同步 + 每日自动同步（可关）；gitcode 私有仓库支持 access token（只写不回读，状态文件 0600 权限，凭证不落 .git/config）。
 - **市场浏览**：读取 ntd 技能合集目录（默认 `~/.ntd/bundled/skills`，GitHub 开源技能仓库归档树），来源卡片/浏览全部/来源钻入三视图，安装进用户库；⚙ 设置面板查看同步状态、立即同步、编辑 url/分支/token/自动同步。
 - 已安装库注册到 dsh 的 SkillRegistry —— 模型直接通过 `skill` 工具按名调用。
 
