@@ -71,10 +71,10 @@ const NS = 'skillsManagement'
 const ZH = {
   title: '技能市场',
   close: '关闭',
-  tabExecutors: '执行器',
+  tabExecutors: '已安装',
   tabMarket: '市场',
   tabSources: '来源',
-  cardsHint: '选择一个执行器浏览它的技能，或一次查看全部',
+  cardsHint: '选择一个智能体工具浏览它的技能，或一次查看全部',
   marketCardsHint: '选择一个来源仓库浏览其技能，或一次查看全部',
   marketLoading: '正在加载市场目录…',
   marketSettings: '市场设置',
@@ -122,16 +122,16 @@ const ZH = {
   showMore: '显示更多（剩余 {n}）',
   browseAll: '浏览全部技能',
   refresh: '刷新',
-  backCards: '← 执行器卡片',
-  backExecutors: '← 执行器',
+  backCards: '← 智能体工具卡片',
+  backExecutors: '← 已安装',
   backAll: '← 全部技能',
   searchAll: '搜索全部技能…',
   filterWithin: '在 {label} 内筛选…',
-  pickSource: '全部执行器',
-  loadingCatalogs: '正在加载全部执行器目录…',
+  pickSource: '全部智能体工具',
+  loadingCatalogs: '正在加载全部智能体工具目录…',
   scanning: '正在扫描 {label}…',
   skillsSuffix: '个技能',
-  noExecutors: '本机未发现任何执行器目录',
+  noExecutors: '本机未发现任何智能体工具目录',
   dirMissingTitle: '{label}：目录不存在',
   dirMissingHint: '预期位置 {dir}',
   notFoundGroup: '本机不存在的来源（{n}）',
@@ -178,10 +178,10 @@ const ZH = {
 const EN = {
   title: 'Skills Market',
   close: 'Close',
-  tabExecutors: 'Executors',
+  tabExecutors: 'Installed',
   tabMarket: 'Market',
   tabSources: 'Sources',
-  cardsHint: 'Pick an executor to browse its skills, or view everything at once',
+  cardsHint: 'Pick an agent tool to browse its skills, or view everything at once',
   marketCardsHint: 'Pick a source repo to browse its skills, or view everything at once',
   marketLoading: 'Loading market catalog…',
   marketSettings: 'Market Settings',
@@ -229,16 +229,16 @@ const EN = {
   showMore: 'Show more ({n} left)',
   browseAll: 'Browse all skills',
   refresh: 'Refresh',
-  backCards: '← Executor cards',
-  backExecutors: '← Executors',
+  backCards: '← Agent tool cards',
+  backExecutors: '← Installed',
   backAll: '← All skills',
   searchAll: 'Search all skills…',
   filterWithin: 'Filter within {label}…',
-  pickSource: 'All Executors',
-  loadingCatalogs: 'Loading all executor catalogs…',
+  pickSource: 'All agent tools',
+  loadingCatalogs: 'Loading all agent tool catalogs…',
   scanning: 'Scanning {label}…',
   skillsSuffix: 'skills',
-  noExecutors: 'No executor directories found on this machine',
+  noExecutors: 'No agent tool directories found on this machine',
   dirMissingTitle: '{label}: directory not found',
   dirMissingHint: 'Expected skills at {dir}',
   notFoundGroup: 'Not found on this machine ({n})',
@@ -417,6 +417,10 @@ const STYLE = `<style>
 .sk-input:focus{border-color:var(--dsw-alias-state-business-primary)}
 .sk-input::placeholder{color:var(--dsw-alias-label-tertiary)}
 .sk-toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:40;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l2);border-radius:999px;padding:8px 18px;font-size:13px;box-shadow:var(--dsw-shadow-lv2)}
+.sk-menu{position:absolute;top:100%;left:0;margin-top:4px;min-width:220px;max-height:340px;overflow:auto;background:var(--dsw-alias-bg-layer-3);border:1px solid var(--dsw-alias-border-l2);border-radius:10px;box-shadow:var(--dsw-shadow-lv2,var(--dsw-shadow-lv1));z-index:2147483600;padding:4px}
+.sk-menu-item{padding:8px 12px;border-radius:8px;cursor:pointer;color:var(--dsw-alias-label-primary);font-size:13px;white-space:nowrap}
+.sk-menu-item:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.sk-menu-item.on{color:var(--dsw-alias-state-business-primary);font-weight:500}
 .sk-tabpill{background:transparent;border:none;color:var(--dsw-alias-label-secondary);font-family:var(--dsw-font-family)}
 </style>`
 
@@ -447,37 +451,30 @@ function Avatar({ name, square, size }) {
     (name[0] || '?').toUpperCase())
 }
 
-/** Executor dropdown built on Menu (primitives have no Select). */
+/** Executor dropdown: self-contained popover (host primitives expose no Menu). */
 function SourceFilter({ rows, value, onChange, t }) {
   const [open, setOpen] = useState(false)
-  const anchorRef = useRef(null)
+  const items = [
+    { id: 'all', label: `${t('pickSource')} (${rows.reduce((a, r) => a + r.skillCount, 0)})` },
+    ...rows.map(x => ({ id: x.key, label: `${x.label} (${x.skillCount})` })),
+  ]
   const current = value === 'all' ? null : rows.find(r => r.key === value)
   const label = value === 'all'
     ? `${t('pickSource')} (${rows.reduce((a, r) => a + r.skillCount, 0)})`
     : `${current ? current.label : value} (${current ? current.skillCount : 0})`
-  return h('span', { ref: anchorRef, style: { position: 'relative' } },
-    prim('Button') && P.Button
-      ? h(P.Button, { variant: 'outline', size: 'sm', ref: undefined,
-          onClick: () => setOpen(o => !o), title: label },
-          h('span', { ref: anchorRef, style: { display: 'inline-flex', alignItems: 'center', gap: 6 } },
-            label,
-            P.IconChevronDownOutline14 ? h(P.IconChevronDownOutline14, { size: 12 }) : '▾'))
-      : h('button', { className: 'sk-btn-fallback', onClick: () => setOpen(o => !o), style: { position: 'relative' } },
-          h('span', { ref: anchorRef }, label, ' ▾')),
-    open && prim('Menu')
-      ? h(P.Menu, {
-          open,
-          anchor: anchorRef.current,
-          align: 'start',
-          items: [
-            { id: 'all', label: `${t('pickSource')} (${rows.reduce((a, r) => a + r.skillCount, 0)})` },
-            ...rows.map(x => ({ id: x.key, label: `${x.label} (${x.skillCount})` })),
-          ],
-          selectedId: value,
-          onSelect: (id) => { onChange(id); setOpen(false) },
-          onClose: () => setOpen(false),
-        })
-      : null)
+  return h('span', { style: { position: 'relative', display: 'inline-flex' } },
+    h(P.Button, { variant: 'outline', size: 'sm',
+        onClick: () => setOpen(o => !o), title: label },
+      label,
+      P.IconChevronDownOutline14 ? h(P.IconChevronDownOutline14, { size: 12 }) : ' ▾'),
+    open && h('div', { className: 'sk-menu' },
+      items.map(item => h('div', {
+        key: item.id,
+        className: 'sk-menu-item' + (item.id === value ? ' on' : ''),
+        role: 'button', tabIndex: 0,
+        onClick: () => { onChange(item.id); setOpen(false) },
+        onKeyDown: e => { if (e.key === 'Enter' || e.key === ' ') { onChange(item.id); setOpen(false) } },
+      }, item.label))))
 }
 
 // ── Skill / executor cards ───────────────────────────────────────────────
