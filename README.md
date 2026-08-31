@@ -1,6 +1,6 @@
 # @weibaohui/skills-management
 
-[![DSH plugin](https://img.shields.io/badge/dsh-plugin-✅-green)](https://github.com/topics/dsh-plugin)
+[![DSH plugin](https://img.shields.io/badge/dsh-plugin-green)](https://github.com/topics/dsh-plugin)
 [![npm version](https://img.shields.io/npm/v/@weibaohui/skills-management)](https://www.npmjs.com/package/@weibaohui/skills-management)
 
 **技能市场插件**：一个页面管理本机所有 coding agent 的技能，还能浏览安装 6600+ 的 ntd 技能市场。
