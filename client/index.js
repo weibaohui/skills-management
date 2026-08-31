@@ -1278,7 +1278,7 @@ function SettingsSlotComponent(props) {
 
 // ── Plugin plane contract ────────────────────────────────────────────────
 
-const CLIENT_NAME = 'dsh-plugin-skills-management'
+const CLIENT_NAME = '@weibaohui/skills-management'
 
 module.exports = {
   name: CLIENT_NAME,

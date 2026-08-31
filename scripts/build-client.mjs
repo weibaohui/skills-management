@@ -19,13 +19,15 @@ const here = dirname(fileURLToPath(import.meta.url))
 const sourcePath = join(here, '..', 'client', 'index.js')
 const bundlePath = join(here, '..', 'client', 'bundle.js')
 
+const pkg = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8'))
+
 const source = readFileSync(sourcePath, 'utf8')
 
 const banner = `/* Generated from client/index.js by scripts/build-client.mjs — do not edit by hand.
  * Regenerate with: npm run build:client
  */
 window.__ModuleLoader__.load({
-  id: "dsh-plugin-skills-management",
+  id: ${JSON.stringify(pkg.name)},
   factory: (require) => {
     var module = { exports: {} }
     var exports = module.exports
