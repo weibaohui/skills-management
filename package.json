@@ -1,6 +1,6 @@
 {
   "name": "@weibaohui/skills-management",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "DeepSeek Harness plugin: ntd skill marketplace — reads the ntd bundled skill collection, registers every skill on the dsh SkillRegistry (callable through the skill tool), and serves install/delete/detail APIs plus a management page (market browse + installed library).",
   "license": "MIT",
   "keywords": [
