@@ -9,4 +9,4 @@
 
 - insert:
     - id: skills-management
-      name: 'dsh-plugin-skills-management'
+      name: '@weibaohui/skills-management'
