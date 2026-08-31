@@ -36,7 +36,6 @@ function loadSchemastery() {
 }
 const Schema = loadSchemastery()
 
-const DEFAULT_MARKET_DIRS = [join(homedir(), '.ntd', 'bundled', 'skills')]
 const MARKET_SCAN_SKIP = new Set(['.git', 'node_modules'])
 const RANK_INSTALLED = 100
 const RANK_MARKET = 500
@@ -312,6 +311,11 @@ function expandTilde(p) {
   return p === '~' || p.startsWith('~/') || p.startsWith('~\\') ? join(homedir(), p.slice(2)) : p
 }
 
+/** dsh 数据根（与宿主一致：$DSH_HOME，缺省 ~/.dsh）。 */
+function dshHome() {
+  return process.env.DSH_HOME ? resolve(process.env.DSH_HOME) : join(homedir(), '.dsh')
+}
+
 /**
  * 切换 dsh 原生治理键 `disable-model-invocation`（docs/subsystems/skills.md）。
  * modelInvocable=true 时移除该键；false 时写入 true。其余 frontmatter 键与正文原样保留。
@@ -547,7 +551,7 @@ module.exports = {
       return resolve(expandTilde(
         typeof eff.repoDir === 'string' && eff.repoDir !== '' ? eff.repoDir
           : config.marketRepoDir !== undefined ? config.marketRepoDir
-          : join(homedir(), '.ntd', 'bundled')))
+          : join(dshHome(), 'skills-management', 'market')))
     }
     const marketRoots = () => configMarketDirs !== undefined ? configMarketDirs : [join(effectiveRepoDir(), 'skills')]
     const marketDirs = marketRoots  // scan/install/locate call sites read through this
