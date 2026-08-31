@@ -8,6 +8,25 @@ ntd 技能市场 for DeepSeek Harness：**一个页面管理本机所有技能**
 - **市场浏览**：读取 ntd 技能合集目录（默认 `~/.ntd/bundled/skills`，GitHub 开源技能仓库归档树），来源卡片/浏览全部/来源钻入三视图，安装进用户库；⚙ 设置面板查看同步状态、立即同步、编辑 url/分支/token/自动同步。
 - 已安装库注册到 dsh 的 SkillRegistry —— 模型直接通过 `skill` 工具按名调用。
 
+
+## 安装
+
+```bash
+dsh plugin --profile web add @weibaohui/skills-management -w
+```
+
+装完重启 `dsh web` 即生效。
+
+## 发版（维护者）
+
+```bash
+npm version patch            # bump + commit + tag
+git push --follow-tags
+gh release create vX.Y.Z --generate-notes   # 创建 Release 触发自动发布到 npm
+```
+
+发布由 GitHub Actions 完成（Release published 触发；打 tag 不发布），走 npm Trusted Publishing 免 token。
+
 ## 安装
 
 ```bash
