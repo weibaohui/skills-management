@@ -70,9 +70,9 @@ test('apply registers dictionaries and both slot entries', async () => {
   }
   plugin.apply(ctx)
   assert.deepEqual(calls.map(c => [c[0], c[1]]).sort(), [[NS, 'en'], [NS, 'zh']])
-  assert.equal(registered.length, 3)
+  assert.equal(registered.length, 2)
   const names = registered.map(r => r.name).sort()
-  assert.deepEqual(names, ['conversation.input.left', 'settings.section', 'sidebar.footer.action'])
+  assert.deepEqual(names, ['conversation.input.left', 'settings.section'])
   for (const spec of registered) {
     assert.equal(spec.id, plugin.name)
     assert.equal(typeof spec.inject, 'function')

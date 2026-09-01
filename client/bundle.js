@@ -11,7 +11,8 @@ window.__ModuleLoader__.load({
     /**
      * dsh-plugin-skills-management - Browser half.
      *
-     * One React app for every surface (sidebar overlay + settings section).
+     * One React app for every surface (settings section; the former sidebar
+     *  full-page entry was retired — pair with dsh-settings-ui for room).
      * All interactive controls are host primitives (@deepseek-ai/dsh-client-ui-
      * primitives); all colors come from the ui-theme `--dsw-*` token layers so
      * light/dark follows the shell; all copy comes from the locale registry
@@ -1404,59 +1405,14 @@ window.__ModuleLoader__.load({
 
     // ── Slot entries ─────────────────────────────────────────────────────────
 
-    function footerStyle() {
-      return { display: 'inline-flex', alignItems: 'center', gap: 6, margin: '4px 10px', padding: '8px 10px',
-        border: 'none', borderRadius: 8, background: 'transparent', color: 'var(--dsw-alias-label-secondary)',
-        font: 'inherit', fontSize: 13, cursor: 'pointer', width: 'calc(100% - 20px)', textAlign: 'left' }
-    }
-
-    /** Panel state lives OUTSIDE React: sidebar churn remounts slot entries,
-     *  and any state kept in them (the old bug) is torn down with them. */
-    const panelStore = {
-      open: false,
-      listeners: new Set(),
-      set(v) { panelStore.open = v; for (const fn of panelStore.listeners) fn(v) },
-      subscribe(fn) { panelStore.listeners.add(fn); return () => panelStore.listeners.delete(fn) },
-    }
-
     /** Jump to the run's conversation: open() is best-effort (it may reject
-     *  after the selection lands), but folding our overlay must always happen. */
+     *  after the selection lands). */
     function openRunSession(sessionId) {
       try {
         const svc = sessionsSvc()
         if (svc && typeof svc.open === 'function') svc.open(sessionId)
       } catch {}
-      panelStore.set(false)
       return true
-    }
-
-    /** Footer slot entry: the button, and — when open — the whole market page
-     *  through the host primitives Modal (portal + overlay handled by the host's
-     *  own React tree; no custom createRoot, which never commits here). */
-    function FooterSlotComponent(props) {
-      const [open, setOpen] = useState(panelStore.open)
-      useEffect(() => panelStore.subscribe(setOpen), [])
-      useEffect(ensureStyles, [])
-
-      const t = props.__t
-      const labelText = t ? t('title') : 'Skills Market'
-      // The sidebar renders this entry with a `wide` owner prop: the collapsed
-      // rail passes false and shows the icon alone; expanded shows the label.
-      const wide = props.wide !== false
-      return h('span', { style: { display: 'contents' } },
-        h('button', { title: labelText, 'aria-label': labelText, onClick: () => panelStore.set(!panelStore.open),
-            style: footerStyle() },
-          P && P.IconSkillOutline16 ? h(P.IconSkillOutline16, { size: 16 }) : '\u{1F3AF}',
-          wide ? ' ' + labelText : ''),
-        open && (() => {
-          const page = h(SkillsPage, { t, embedded: false, onClose: () => panelStore.set(false) })
-          // Fullscreen: portal the fixed-position page to <body> so no sidebar
-          // ancestor (transform-containing or otherwise) can clip it.
-          if (RDP && typeof RDP.createPortal === 'function' && typeof document !== 'undefined') {
-            return RDP.createPortal(page, document.body)
-          }
-          return page // fallback: fixed positioning still applies from here
-        })())
     }
 
     /** Settings section slot entry: render the page directly in the host tree. */
@@ -1535,21 +1491,6 @@ window.__ModuleLoader__.load({
             }
           }
         } catch (e) { try { console.error('[skills-management] locale init:', e) } catch {} }
-        ctx.effect(() => {
-          try {
-          ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
-            name: 'sidebar.footer.action',
-            id: CLIENT_NAME,
-            order: 50,
-            locale: NS,
-            label: () => t('title'),
-            inject: () => ({ t }),
-          }, function FooterSlot(apiProps) {
-            // ownerProps (the sidebar's wide flag) land here — forward them
-            return h(FooterSlotComponent, { __t: t, wide: apiProps && apiProps.wide })
-          }))
-          } catch (e) { (globalThis.__skErrors = globalThis.__skErrors || []).push('footer:' + (e && e.message)); throw e }
-        }, 'skills-management: sidebar footer action')
         ctx.effect(() => {
           try {
           ctx.slots.inject('settings.section', () => ctx.slots.register({
