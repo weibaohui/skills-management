@@ -243,7 +243,7 @@ test('scan skips .git and node_modules, resolves through nesting', async () => {
 
 test('executor catalog covers known agents and no default source is read-only', () => {
   const keys = EXECUTOR_DEFS.map((d) => d.key)
-  for (const expected of ['dsh', 'claudecode', 'zcode', 'codex', 'agents']) assert.ok(keys.includes(expected), `missing ${expected}`)
+  for (const expected of ['dsh', 'claudecode', 'zcode', 'codex', 'workbuddy', 'agents']) assert.ok(keys.includes(expected), `missing ${expected}`)
   // agents 根自治理键开关覆盖起不再只读（与用户库同权）；只读只来自 extraExecutors 的显式标记
   for (const def of EXECUTOR_DEFS) assert.equal(def.readOnly === true, false, `${def.key} must not be read-only`)
 })
@@ -392,6 +392,64 @@ test('DELETE is scoped to a source and refuses read-only ones', async () => {
     assert.equal(legacy.status, 200)
     assert.equal(legacy.payload.executor, 'dsh')
     assert.ok(env.getInvalidations() >= 1) // dsh deletes refresh the provider
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+// dir name ≠ frontmatter name (WorkBuddy-style: `dev-expert__skillhub/` whose
+// SKILL.md says `name: dev-expert`). The client lists & addresses such skills
+// by their frontmatter name, so detail/file/install/delete must resolve by it.
+test('executor skills whose dir name ≠ frontmatter name resolve by frontmatter name', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skills-mismatch-'))
+  try {
+    await mkdir(join(root, 'wb', 'dev-expert__skillhub'), { recursive: true })
+    await writeFile(join(root, 'wb', 'dev-expert__skillhub', 'SKILL.md'),
+      '---\nname: dev-expert\ndescription: expert skill\nversion: "1.0"\n---\nbody')
+    await writeFile(join(root, 'wb', 'dev-expert__skillhub', 'notes.md'), 'note text')
+    // a matched skill alongside (dir == name) must still resolve via the direct path
+    await writeSkill(join(root, 'wb'), 'plain-tool', { name: 'plain-tool', description: 'matched' })
+
+    const env = setupPlugin({
+      marketDirs: [join(root, 'market')],
+      installedDir: join(root, 'installed'),
+      executorDirs: { workbuddy: join(root, 'wb') },
+    })
+    const call = env.call
+
+    // list returns the frontmatter name for both shapes
+    const list = await call('GET', '/skills-management/api/executors?executor=workbuddy')
+    assert.equal(list.status, 200)
+    const names = list.payload.executor.skills.map((s) => s.name)
+    assert.ok(names.includes('dev-expert'))
+    assert.ok(names.includes('plain-tool'))
+
+    // detail by frontmatter name resolves to the mismatched dir
+    const detail = await call('GET', '/skills-management/api/detail?name=dev-expert&executor=workbuddy')
+    assert.equal(detail.status, 200)
+    assert.equal(detail.payload.meta.name, 'dev-expert')
+    assert.equal(detail.payload.meta.version, '1.0')
+    assert.ok(detail.payload.dir.includes('dev-expert__skillhub'))
+
+    // file preview under the same scope
+    const file = await env.callRaw('GET', '/skills-management/api/file?name=dev-expert&executor=workbuddy&path=notes.md')
+    assert.equal(file.status, 200)
+    assert.equal(file.body, 'note text')
+
+    // install by frontmatter name copies into the library as the dir's short name
+    const inst = await call('POST', '/skills-management/api/install', { name: 'dev-expert', from: 'workbuddy' })
+    assert.equal(inst.status, 201)
+    await stat(join(root, 'installed', 'dev-expert', 'SKILL.md'))
+
+    // delete by frontmatter name removes the mismatched dir
+    const del = await call('DELETE', '/skills-management/api', { name: 'dev-expert', executor: 'workbuddy' })
+    assert.equal(del.status, 200)
+    await assert.rejects(stat(join(root, 'wb', 'dev-expert__skillhub')))
+
+    // matched skill still deletes by direct path
+    const delPlain = await call('DELETE', '/skills-management/api', { name: 'plain-tool', executor: 'workbuddy' })
+    assert.equal(delPlain.status, 200)
+    await assert.rejects(stat(join(root, 'wb', 'plain-tool')))
   } finally {
     await rm(root, { recursive: true, force: true })
   }

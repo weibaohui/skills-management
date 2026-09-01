@@ -65,6 +65,7 @@ const EXECUTOR_DEFS = [
   { key: 'pi', label: 'Pi', sub: '.pi/skills' },
   { key: 'mimo', label: 'Mimo', sub: '.local/share/mimocode/skills' },
   { key: 'zhanlu', label: 'ZhanLu', sub: '.local/share/zhanlu/skills' },
+  { key: 'workbuddy', label: 'WorkBuddy', sub: '.workbuddy/skills' },
   // agents 共享池曾是只读来源；治理键开关（disable-model-invocation）覆盖该根后
   // "只读"名不副实——与 dsh 的 user-agents 内置根对齐，按普通可写来源对待。
   { key: 'agents', label: 'Agents', sub: '.agents/skills' },
@@ -223,13 +224,36 @@ function validSkillName(name) {
   return typeof name === 'string' && name !== '' && !name.includes('..') && !name.includes('\\') && !name.startsWith('/')
 }
 
+/**
+ * Resolve a skill dir under one source root by the identifier the client sends.
+ * Tries the direct path `<root>/<name>` first (covers dir name == frontmatter
+ * name, and nested relPaths like `grouped/foo`). On ENOENT, falls back to a
+ * frontmatter-name scan: some sources ship a skill in a dir whose name ≠ its
+ * frontmatter `name` (e.g. WorkBuddy's `dev-expert__skillhub/` whose frontmatter
+ * `name` is `dev-expert`). The client lists & addresses such skills by their
+ * frontmatter `name`, so the resolver must honor it. frontmatter `name` is always
+ * single-segment kebab, so a slash-bearing request is a relPath that already
+ * missed direct lookup and cannot be a frontmatter name — skip the scan.
+ * Returns the skill dir or undefined.
+ */
+async function resolveSkillDirByName(root, name) {
+  try { return await resolveSkillDir(root, name) }
+  catch (e) {
+    if (!String(e && e.message).includes('not found')) throw e
+  }
+  if (name.includes('/')) return undefined
+  for (const entry of await scanRoot(root)) {
+    try { if ((await readSkillEntry(entry)).name === name) return entry.dir }
+    catch {}
+  }
+  return undefined
+}
+
 /** Resolve `<root>/<name>` to an existing skill dir under one source root. */
 async function findDirUnderRoot(root, fullName, where) {
-  try { return await resolveSkillDir(root, fullName) }
-  catch (e) {
-    if (String(e && e.message).includes('not found')) throw new Error(`skill '${fullName}' not found in ${where}`)
-    throw e
-  }
+  const dir = await resolveSkillDirByName(root, fullName)
+  if (dir === undefined) throw new Error(`skill '${fullName}' not found in ${where}`)
+  return dir
 }
 
 async function sendSkillFile(res, skillDir, relPath, contentType) {
@@ -722,9 +746,8 @@ module.exports = {
       const row = findExecutorRow(key)
       if (row === undefined) throw new Error(`unknown executor '${key}'`)
       if (row.readOnly) throw new Error(`source '${key}' is read-only; cannot delete skills there`)
-      const target = join(row.root, name)
-      const stat = await fsP.stat(target).catch(() => undefined)
-      if (stat === undefined || !stat.isDirectory()) throw new Error(`skill '${name}' not found in ${row.label} (${row.key})`)
+      const target = await resolveSkillDirByName(row.root, name)
+      if (target === undefined) throw new Error(`skill '${name}' not found in ${row.label} (${row.key})`)
       await fsP.rm(target, { recursive: true })
       if (key === 'dsh') invalidate()
       return { removed: name, executor: key }
