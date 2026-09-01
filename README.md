@@ -32,3 +32,7 @@ dsh plugin --profile web add @weibaohui/skills-management -w
 2. 「已安装」视图管理本机技能；「市场」视图浏览/搜索/安装 ntd 合集技能；「执行器」视图按来源钻入查看各 coding agent 的技能
 3. 详情页可预览 SKILL.md 全文、安装到用户库、切换模型可调用开关
 4. ⚙ 设置面板里可配置市场仓库地址、分支、access token 与自动同步
+
+## 联系我 :飞书群
+
+![link](https://foruda.gitee.com/images/1774880015525784725/4fd67005_77493.png "link")
