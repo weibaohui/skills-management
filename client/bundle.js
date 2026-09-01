@@ -74,15 +74,24 @@ window.__ModuleLoader__.load({
     let sessionsApi = null
     const sessionsSvc = () => sessionsApi
 
-    // Composer services (inputTriggers + sessions) for the ＋技能 button: opens
-    // the `skill` source (registered by dsh-client-ui-skill) as a menu. Absence
-    // hides the button; nothing else depends on it.
+    // Composer services (inputTriggers + sessions) for the ＋ 技能 button plus
+    // the `connection` service for the picker's skill catalog: the button opens
+    // the plugin's own searchable picker popover (the host slash menu filters
+    // only by a typed query, which a button click cannot provide); the pick is
+    // written into the draft through the same scoped `slash/input-insert-text`
+    // event the host menu executes. Absence hides the button; nothing else
+    // depends on it.
     let composerScope = null
+    let connectionApi = null
 
     /**
      * Open one registered '/' source over a synthetic collapsed span appended at
      * the draft end (host toggleCommandMenu 同款调用形状；标准 kit 不暴露光标，
      * pick 依赖 span-CAS：点击后草稿若再变动则本次 pick 静默作废）。
+     *
+     * NOTE: the ＋ 技能 button no longer uses this — the host menu cannot offer
+     * a search box, so the button opens SkillPicker instead. Kept for the
+     * contract tests and as the documented toggleSource path.
      */
     function openTriggerSource(scope, sessionId, input, sourceName) {
       const inputTriggers = scope && scope.inputTriggers
@@ -103,6 +112,127 @@ window.__ModuleLoader__.load({
         span: { start: at, end: at, draftRev: (input && input.draftRev) || 0 },
       })
       return true
+    }
+
+    /**
+     * Insert `text` at the end of the session draft through the same scoped
+     * event the host slash menu executes (`slash/input-insert-text`). The span
+     * CAS uses the freshest input snapshot handed to the slot props — while the
+     * picker popover is open the composer draft cannot move (focus is in the
+     * picker), so the splice applies; a stale snapshot quietly no-ops, same as
+     * the host menu's span-CAS.
+     */
+    function insertComposerText(scope, sessionId, input, text) {
+      const sessions = scope && scope.sessions
+      if (!sessions) return false
+      let actx
+      try { actx = sessions.scope(sessionId) } catch { return false }
+      if (actx === undefined || actx === null || typeof actx.bail !== 'function') return false
+      const draft = (input && input.draft) || ''
+      const at = draft.length
+      try {
+        return actx.bail(actx, 'slash/input-insert-text', {
+          text,
+          span: { start: at, end: at, draftRev: (input && input.draftRev) || 0 },
+        }) === true
+      } catch { return false }
+    }
+
+    /** Best-effort refocus of the composer textarea after the picker closes. */
+    function refocusComposer() {
+      try {
+        const card = document.querySelector('[data-composer-card]')
+        const ta = card && card.querySelector('textarea')
+        if (ta && typeof ta.focus === 'function') ta.focus()
+      } catch {}
+    }
+
+    /** Picker popover list cap — beyond this the search input is the filter. */
+    const PICKER_ROW_CAP = 200
+
+    /** Skill catalog cache for the picker (ui-skill 同源：connection.api.skills). */
+    let skillCatalog = { sessionId: null, at: 0, rows: null }
+    const SKILL_CATALOG_TTL = 60_000
+
+    /**
+     * Picker candidates from the host skill registry (the same list the `/`
+     * skill source shows). Subagent sessions have no catalog (ui-skill 同款守卫);
+     * a failed/absent connection rejects → the picker shows its empty state.
+     */
+    async function fetchSkillCandidates(connection, sessions, sessionId) {
+      try { if (sessions && typeof sessions.subagentAddress === 'function' && sessions.subagentAddress(sessionId) !== undefined) return [] } catch {}
+      const now = Date.now()
+      if (skillCatalog.rows !== null && skillCatalog.sessionId === sessionId && now - skillCatalog.at < SKILL_CATALOG_TTL) return skillCatalog.rows
+      const skills = connection && connection.api && connection.api.skills
+      if (!skills || typeof skills.list !== 'function') throw new Error('connection.api.skills unavailable')
+      const res = await skills.list({ sessionId })
+      const result = res && res.result
+      if (!result || result.ok !== true) throw new Error('skill.list failed')
+      const list = result.value && Array.isArray(result.value.skills) ? result.value.skills : []
+      const rows = list.map((s) => ({ name: s.name, description: s.description || '', modelInvocable: s.modelInvocable !== false }))
+      skillCatalog = { sessionId, at: now, rows }
+      return rows
+    }
+
+    /**
+     * ＋ 技能 picker：锚定在按钮上方、自带搜索框的候选浮层（portal 到 body）。
+     * 宿主斜杠菜单靠「输入的 query」过滤，按钮打开的菜单没有输入载体——候选
+     * 太多时无从筛选，所以浮层自带搜索框。键盘 ↑/↓/Enter/Esc，鼠标 hover+点击。
+     */
+    function SkillPicker(props) {
+      const t = props.t
+      const [query, setQuery] = useState('')
+      const [active, setActive] = useState(0)
+      const inputRef = useRef(null)
+      const listRef = useRef(null)
+      useEffect(() => { try { if (inputRef.current) inputRef.current.focus() } catch {} }, [])
+      useEffect(() => {
+        const onKey = (e) => { if (e.key === 'Escape' && !(e.isComposing === true)) props.onClose() }
+        try { document.addEventListener('keydown', onKey) } catch {}
+        return () => { try { document.removeEventListener('keydown', onKey) } catch {} }
+      }, [])
+      const lower = query.trim().toLowerCase()
+      const all = props.rows || []
+      const filtered = lower === '' ? all : all.filter((r) => matchSkill(r, lower))
+      const shown = filtered.slice(0, PICKER_ROW_CAP)
+      useEffect(() => { setActive(0) }, [lower, props.rows])
+      useEffect(() => {
+        const list = listRef.current
+        const el = list && list.children[active]
+        if (el && typeof el.scrollIntoView === 'function') { try { el.scrollIntoView({ block: 'nearest' }) } catch {} }
+      }, [active])
+      const onKeyDown = (e) => {
+        // IME 组词中的按键不触发选择（回车是选定拼音候选，不是 pick）
+        if (e.nativeEvent && e.nativeEvent.isComposing === true) return
+        if (e.key === 'ArrowDown') { e.preventDefault(); setActive((i) => Math.min(i + 1, shown.length - 1)) }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); setActive((i) => Math.max(i - 1, 0)) }
+        else if (e.key === 'Enter') { e.preventDefault(); const row = shown[active]; if (row) props.onPick(row) }
+      }
+      const width = 400
+      const winW = typeof window !== 'undefined' ? window.innerWidth : 800
+      const winH = typeof window !== 'undefined' ? window.innerHeight : 600
+      const left = Math.max(8, Math.min(props.anchor.left, winW - width - 8))
+      const bottom = Math.max(8, winH - props.anchor.top + 6)
+      return h('div', { className: 'sk-picker-backdrop', onMouseDown: (e) => { if (e.target === e.currentTarget) props.onClose() } },
+        h('div', { className: 'sk-picker', style: { left, bottom, width }, role: 'dialog', 'aria-label': t('pickSkillTitle') },
+          h('input', {
+            ref: inputRef, className: 'sk-input sk-picker-input', value: query,
+            placeholder: t('pickerSearch'), onChange: (e) => setQuery(e.target.value), onKeyDown,
+          }),
+          h('div', { className: 'sk-picker-list', ref: listRef, role: 'listbox' },
+            props.rows === null
+              ? h('div', { className: 'sk-picker-empty' }, t('pickerLoading'))
+              : shown.length === 0
+                ? h('div', { className: 'sk-picker-empty' }, t('emptySearch'))
+                : shown.map((row, i) => h('button', {
+                    key: row.name, type: 'button', role: 'option', 'aria-selected': i === active,
+                    className: 'sk-picker-row', 'data-active': i === active,
+                    onMouseEnter: () => setActive(i),
+                    onMouseDown: (e) => { e.preventDefault(); props.onPick(row) },
+                  },
+                    h('span', { className: 'sk-picker-name' }, row.name),
+                    h('span', { className: 'sk-picker-desc' },
+                      row.modelInvocable ? row.description : `${t('pickerUserOnly')} · ${row.description}`))))))
     }
 
     // ── Locale ───────────────────────────────────────────────────────────────
@@ -136,7 +266,7 @@ window.__ModuleLoader__.load({
       saved: '设置已保存',
       gitMissing: '未检测到 git',
       repoDirLabel: '本地目录（同步内容存放处）',
-      tokenLabel: '访问令牌（私有仓库需要）',
+      tokenLabel: '访问令牌（分享到社区/私有仓库需要）',
       tokenConfigured: '已配置',
       clearToken: '清除',
       shareBtn: '分享',
@@ -214,8 +344,11 @@ window.__ModuleLoader__.load({
       invocationHint: '关闭后技能保留在库里，但不再注入对话目录（skill 工具也调不到）',
       pathLabel: '路径',
       meTag: '本机',
-      pickSkill: '＋技能',
+      pickSkill: '＋ 技能',
       pickSkillTitle: '选择一个技能，其内容将注入本条消息',
+      pickerSearch: '搜索技能名称或描述…',
+      pickerLoading: '正在加载技能目录…',
+      pickerUserOnly: '仅用户',
     }
 
     const EN = {
@@ -245,7 +378,7 @@ window.__ModuleLoader__.load({
       saved: 'Settings saved',
       gitMissing: 'git not found',
       repoDirLabel: 'Local directory (sync target)',
-      tokenLabel: 'Access token (private repos)',
+      tokenLabel: 'Access token (community sharing / private repos)',
       tokenConfigured: 'configured',
       clearToken: 'Clear',
       shareBtn: 'Share',
@@ -325,6 +458,9 @@ window.__ModuleLoader__.load({
       meTag: 'me',
       pickSkill: '+ Skill',
       pickSkillTitle: 'Pick a skill; its content is injected into this message',
+      pickerSearch: 'Search skills by name or description…',
+      pickerLoading: 'Loading skill catalog…',
+      pickerUserOnly: 'user-only',
     }
 
     // ── Pure helpers ────────────────────────────────────────────────────────
@@ -469,6 +605,15 @@ window.__ModuleLoader__.load({
     .sk-tabpill{background:transparent;border:none;color:var(--dsw-alias-label-secondary);font-family:var(--dsw-font-family)}
     .sk-chip{display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 9px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-secondary);font-family:var(--dsw-font-family);font-size:12px;cursor:pointer;white-space:nowrap}
     .sk-chip:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
+    .sk-picker-backdrop{position:fixed;inset:0;z-index:2147483200}
+    .sk-picker{position:fixed;z-index:2147483201;width:400px;max-width:92vw;max-height:360px;display:flex;flex-direction:column;gap:4px;padding:6px;background:var(--dsw-specific-menu);border:1px solid var(--dsw-alias-border-inverted);border-radius:12px;box-shadow:var(--dsw-shadow-lv3)}
+    .sk-picker-input{flex:none;box-sizing:border-box;width:100%}
+    .sk-picker-list{display:flex;flex-direction:column;min-height:40px;overflow-y:auto}
+    .sk-picker-row{display:flex;align-items:center;gap:8px;width:100%;min-height:36px;padding:6px 10px;border:0;border-radius:8px;background:transparent;color:var(--dsw-alias-label-primary);text-align:left;cursor:pointer;font-family:var(--dsw-font-family);font-size:13px}
+    .sk-picker-row[data-active="true"]{background:var(--dsw-alias-interactive-bg-hover)}
+    .sk-picker-name{flex:none;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+    .sk-picker-desc{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-tertiary);font-size:12px}
+    .sk-picker-empty{padding:12px 10px;text-align:center;color:var(--dsw-alias-label-dimmed);font-size:13px}
     </style>`
 
     // ── Fetch layer ─────────────────────────────────────────────────────────
@@ -1327,7 +1472,7 @@ window.__ModuleLoader__.load({
     module.exports = {
       name: CLIENT_NAME,
       inject: ['slots', 'locale'],
-      __internals: { NS, ZH, EN, matchSkill, formatSize, formatTime, openTriggerSource },
+      __internals: { NS, ZH, EN, matchSkill, formatSize, formatTime, openTriggerSource, insertComposerText, fetchSkillCandidates },
       /** Test/host helper: mount a standalone page into any container. */
       __boot(container, opts = {}) {
         ensureStyles()
@@ -1355,11 +1500,18 @@ window.__ModuleLoader__.load({
             })
           }
         } catch {}
-        // Composer services (inputTriggers + sessions) for the ＋技能 button;
+        // Composer services (inputTriggers + sessions) for the ＋ 技能 button;
         // absence hides the button only.
         try {
           if (typeof ctx.inject === 'function') {
             ctx.inject(['inputTriggers', 'sessions'], (scope) => { composerScope = scope })
+          }
+        } catch {}
+        // connection service for the picker skill catalog (host skill registry,
+        // ui-skill 同源); absence keeps the button hidden.
+        try {
+          if (typeof ctx.inject === 'function') {
+            ctx.inject(['connection'], (scope) => { connectionApi = scope && scope.connection })
           }
         } catch {}
         // Locale service is optional at boot order — degrade to EN until present
@@ -1424,7 +1576,7 @@ window.__ModuleLoader__.load({
             inject: () => ({ t }),
           }, function SkillButtonSlot(apiProps) {
             return h(ComposerButtonSlot, {
-              __t: t, icon: '⚡', label: t('pickSkill'), title: t('pickSkillTitle'),
+              __t: t, label: t('pickSkill'), title: t('pickSkillTitle'),
               source: 'skill', sessionId: apiProps && apiProps.sessionId, input: apiProps && apiProps.input,
             })
           }))
@@ -1433,18 +1585,49 @@ window.__ModuleLoader__.load({
       },
     }
 
-    /** Composer tool-row button: opens a registered '/' source (ui-skill's
-     *  `skill` source) over the session's trigger controller. Hidden while the
-     *  inputTriggers/sessions services are absent. */
+    /** Composer tool-row button: 加号+文字 chip，点击在按钮上方打开自带搜索的
+     *  技能 picker 浮层（候选 = 宿主技能注册表，ui-skill 同源）；pick 经
+     *  slash/input-insert-text 写入 `/<name> `。浮层背板盖住按钮以外的区域，
+     *  再点一次按钮会先落在背板上——天然形成开关切换。
+     *  connection 缺席（picker 无目录来源）时回退旧的 toggleSource 宿主菜单；
+     *  inputTriggers/sessions 缺席时按钮隐藏（与旧行为一致）。 */
     function ComposerButtonSlot(props) {
       useEffect(ensureStyles, [])
+      const [picker, setPicker] = useState(null) // {left, top} 锚点快照；null = 关闭
+      const [rows, setRows] = useState(null)     // null = 加载中
+      const btnRef = useRef(null)
+      const liveInput = useRef(props.input)
+      liveInput.current = props.input
       const ready = !!(composerScope && composerScope.inputTriggers && composerScope.sessions && props.sessionId)
       if (!ready) return null
+      const close = () => setPicker(null)
+      const open = () => {
+        // 目录来源缺席 → 退回宿主斜杠菜单（无搜索，但按钮不消失）
+        if (!connectionApi) { openTriggerSource(composerScope, props.sessionId, liveInput.current, props.source); return }
+        let anchor = { left: 16, top: 160 }
+        try { if (btnRef.current) anchor = btnRef.current.getBoundingClientRect() } catch {}
+        setPicker({ left: anchor.left, top: anchor.top })
+        setRows(null)
+        fetchSkillCandidates(connectionApi, composerScope.sessions, props.sessionId)
+          .then((list) => setRows(Array.isArray(list) ? list : []))
+          .catch(() => setRows([]))
+      }
+      const pick = (row) => {
+        insertComposerText(composerScope, props.sessionId, liveInput.current, `/${row.name} `)
+        close()
+        refocusComposer()
+      }
+      const popover = picker !== null && RDP && typeof RDP.createPortal === 'function'
+        ? RDP.createPortal(h(SkillPicker, { t: props.__t, anchor: picker, rows, onClose: close, onPick: pick }), document.body)
+        : null
       return h('button', {
         className: 'sk-chip',
+        ref: btnRef,
         title: props.title || props.label,
-        onClick: () => { openTriggerSource(composerScope, props.sessionId, props.input, props.source) },
-      }, `${props.icon || ''}${props.icon ? ' ' : ''}${props.label}`)
+        'aria-haspopup': 'dialog',
+        'aria-expanded': picker !== null,
+        onClick: open,
+      }, props.label, popover)
     }
 
     return module.exports

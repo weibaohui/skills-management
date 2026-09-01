@@ -10,7 +10,7 @@ import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
 const plugin = require('../client/index.js')
-const { NS, ZH, EN, matchSkill, formatSize } = plugin.__internals
+const { NS, ZH, EN, matchSkill, formatSize, insertComposerText, fetchSkillCandidates } = plugin.__internals
 
 test('client module declares slots + locale injects', () => {
   assert.equal(plugin.name, '@weibaohui/skills-management') // must equal the boot manifest id
@@ -77,9 +77,51 @@ test('apply registers dictionaries and both slot entries', async () => {
     assert.equal(spec.id, plugin.name)
     assert.equal(typeof spec.inject, 'function')
   }
-  // ＋技能按钮槽位：打开 ui-skill 的 'skill' 源
+  // ＋技能按钮槽位：打开自带搜索的 picker 浮层
   const composer = registered.find(r => r.name === 'conversation.input.left')
   assert.equal(typeof composer, 'object')
+})
+
+test('insertComposerText bails slash/input-insert-text with an end-of-draft span', () => {
+  const calls = []
+  const scope = { sessions: { scope: (id) => ({ id, bail(...args) { calls.push(args); return true } }) } }
+  const ok = insertComposerText(scope, 's1', { draft: 'ab', draftRev: 5 }, '/lint ')
+  assert.equal(ok, true)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0][1], 'slash/input-insert-text')
+  assert.deepEqual(calls[0][2], { text: '/lint ', span: { start: 2, end: 2, draftRev: 5 } })
+  // bail 未被认领 / 服务缺席 / scope 抛错 → false，无副作用
+  assert.equal(insertComposerText({ sessions: { scope: () => ({ bail: () => undefined }) } }, 's', {}, '/x '), false)
+  assert.equal(insertComposerText(null, 's', {}, '/x '), false)
+  assert.equal(insertComposerText({ sessions: { scope: () => { throw new Error('x') } } }, 's', {}, '/x '), false)
+  assert.equal(insertComposerText({ sessions: { scope: () => null } }, 's', {}, '/x '), false)
+})
+
+test('fetchSkillCandidates maps the host registry and guards absent services', async () => {
+  // 子代理会话：ui-skill 同款守卫，直接空目录
+  const subagentSessions = { subagentAddress: () => 'subagent://x' }
+  assert.deepEqual(await fetchSkillCandidates(null, subagentSessions, 's-sub'), [])
+  // connection 缺席 / api 缺失 → reject（picker 落入空态）
+  await assert.rejects(() => fetchSkillCandidates(null, {}, 's-1'))
+  await assert.rejects(() => fetchSkillCandidates({ api: {} }, {}, 's-1'))
+  // result.ok=false → reject
+  const badConn = { api: { skills: { list: async () => ({ result: { ok: false } }) } } }
+  await assert.rejects(() => fetchSkillCandidates(badConn, {}, 's-bad'))
+  // 正常映射 + 60s 内同会话走缓存（list 只调一次）
+  let calls = 0
+  const conn = { api: { skills: { list: async ({ sessionId }) => { calls += 1; return { result: { ok: true, value: { skills: [
+    { name: 'lint', description: '检查', modelInvocable: true },
+    { name: 'deploy', description: '', modelInvocable: false },
+  ] } } } } } } }
+  const sid = `s-${Date.now()}`
+  const rows = await fetchSkillCandidates(conn, {}, sid)
+  assert.deepEqual(rows, [
+    { name: 'lint', description: '检查', modelInvocable: true },
+    { name: 'deploy', description: '', modelInvocable: false },
+  ])
+  const again = await fetchSkillCandidates(conn, {}, sid)
+  assert.equal(again, rows)
+  assert.equal(calls, 1)
 })
 
 test('openTriggerSource toggles via sessionOf with a synthetic end-of-draft span', () => {
