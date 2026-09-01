@@ -519,6 +519,60 @@ test('market sync clones, then fetches updates from a git remote', async () => {
   }
 })
 
+test('market sync clones sparse: only the skills subtree lands in the worktree', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-market-sparse-'))
+  try {
+    const remote = join(root, 'remote')
+    await makeRemoteRepo(remote, { 'demo-repo/alpha/SKILL.md': '---\nname: alpha\ndescription: first\n---\nA' })
+    // 仓库同时携带 skills 之外子树（ntd-resource 现实形状：experts/ + templates/）
+    await mkdir(join(remote, 'experts', 'some-expert'), { recursive: true })
+    await writeFile(join(remote, 'experts', 'some-expert', 'plugin.json'), '{}')
+    await git(['add', '-A'], remote)
+    await git(['commit', '-qm', 'add experts'], remote)
+    const local = join(root, 'local')
+
+    const env = setupPlugin({
+      installedDir: join(root, 'installed'),
+      marketRepoDir: local,
+      marketSync: { url: remote, branch: 'main', syncOnStartup: false, autoSync: false },
+    })
+
+    const first = await env.call('POST', '/skills-management/api/market/sync')
+    assert.equal(first.status, 200)
+    assert.equal(first.payload.isFirstClone, true)
+    // skills 子树在工作区，skills 之外的 experts/ 被稀疏排除
+    await stat(join(local, 'skills', 'demo-repo', 'alpha', 'SKILL.md'))
+    await assert.rejects(stat(join(local, 'experts')))
+    // 状态透出稀疏配置
+    const st = await env.call('GET', '/skills-management/api/market/status')
+    assert.deepEqual(st.payload.sparsePaths, ['skills'])
+
+    // fetch+reset 更新路径在稀疏检出上照常工作，且不越界检出其他子树
+    await mkdir(join(remote, 'skills', 'demo-repo', 'beta'), { recursive: true })
+    await writeFile(join(remote, 'skills', 'demo-repo', 'beta', 'SKILL.md'), '---\nname: beta\ndescription: second\n---\nB')
+    await git(['add', '-A'], remote)
+    await git(['commit', '-qm', 'add beta'], remote)
+    const second = await env.call('POST', '/skills-management/api/market/sync')
+    assert.equal(second.status, 200)
+    assert.equal(second.payload.hasUpdates, true)
+    await stat(join(local, 'skills', 'demo-repo', 'beta', 'SKILL.md'))
+    await assert.rejects(stat(join(local, 'experts')))
+
+    // marketSparsePaths: null 逃生舱 → 全量检出
+    const fullLocal = join(root, 'local-full')
+    const env2 = setupPlugin({
+      installedDir: join(root, 'installed'),
+      marketRepoDir: fullLocal,
+      marketSparsePaths: null,
+      marketSync: { url: remote, branch: 'main', syncOnStartup: false, autoSync: false },
+    })
+    await env2.call('POST', '/skills-management/api/market/sync')
+    await stat(join(fullLocal, 'experts', 'some-expert', 'plugin.json'))
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('market repo dir is runtime-configurable and the scan follows it', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-market-dir-'))
   try {

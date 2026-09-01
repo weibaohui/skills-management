@@ -381,16 +381,34 @@ function authedUrl(url, token) {
   return String(url).replace(/^(https?:\/\/)([^@/]+@)?/, `$1oauth2:${encodeURIComponent(token)}@`)
 }
 
-/** Clone (first time) or fetch+reset (update); remote branch is truth. */
-async function gitSyncRepo(binary, url, branch, repoDir, token) {
+/** Clone (first time) or fetch+reset (update); remote branch is truth.
+ *  `sparsePaths` (e.g. ['skills']) switches the checkout to sparse mode: fresh
+ *  clones pass --filter=blob:none --sparse so only those subtrees download
+ *  (the ntd-resource monorepo also carries experts/ + templates/, ~2x the
+ *  skills payload); servers without filter support just warn and fall back to
+ *  a full clone, which sparse-checkout still prunes. An existing full checkout
+ *  is converted in place — the worktree prunes immediately, already-packed
+ *  blobs stay (reachable from HEAD), so the big win is on fresh clones. */
+async function gitSyncRepo(binary, url, branch, repoDir, token, sparsePaths) {
   const remote = authedUrl(url, token)
+  const sparse = Array.isArray(sparsePaths) && sparsePaths.length > 0 ? sparsePaths : undefined
   let repoExists = false
   try { await fsP.access(join(repoDir, '.git')); repoExists = true } catch { repoExists = false }
   if (!repoExists) {
     await fsP.rm(repoDir, { recursive: true, force: true })
     await fsP.mkdir(join(repoDir, '..'), { recursive: true })
-    await gitExec(binary, ['clone', '-b', branch, '--depth', '1', remote, repoDir])
+    if (sparse) {
+      await gitExec(binary, ['clone', '-b', branch, '--depth', '1', '--filter=blob:none', '--sparse', remote, repoDir])
+      await gitExec(binary, ['sparse-checkout', 'set', '--cone', ...sparse], repoDir)
+    } else {
+      await gitExec(binary, ['clone', '-b', branch, '--depth', '1', remote, repoDir])
+    }
     return { isFirstClone: true, hasUpdates: true, before: undefined, after: await gitCurrentCommit(binary, repoDir) }
+  }
+  // Migrate a pre-sparse full checkout in place (idempotent no-op once sparse).
+  if (sparse) {
+    try { await gitExec(binary, ['sparse-checkout', 'set', '--cone', ...sparse], repoDir) }
+    catch (e) { console.warn(`skills-management: sparse-checkout conversion failed, continuing full: ${e && e.message}`) }
   }
   const before = await gitCurrentCommit(binary, repoDir)
   await gitExec(binary, ['fetch', remote, branch], repoDir)
@@ -555,6 +573,11 @@ module.exports = {
     }
     const marketRoots = () => configMarketDirs !== undefined ? configMarketDirs : [join(effectiveRepoDir(), 'skills')]
     const marketDirs = marketRoots  // scan/install/locate call sites read through this
+    // 稀疏检出子树：ntd-resource 仓库同时携带 experts/templates，只检 skills 一份省一半以上
+    // 流量与磁盘。config.marketSparsePaths: null 关闭；自定义数组换目标子树。
+    const marketSparsePaths = () => config.marketSparsePaths === null
+      ? undefined
+      : (Array.isArray(config.marketSparsePaths) && config.marketSparsePaths.length > 0 ? config.marketSparsePaths.map(String) : ['skills'])
     const installedDir = resolve(expandTilde(config.installedDir !== undefined ? config.installedDir : process.env.DSH_HOME ? join(process.env.DSH_HOME, 'skills') : join(homedir(), '.dsh', 'skills')))
     const providerName = config.providerName !== undefined ? config.providerName : 'ntd-skills'
     // 市场库存（数几千条）默认不进模型目录 available_skills —— 只作为可浏览/可安装的货架。
@@ -775,7 +798,7 @@ module.exports = {
         if (!ok) throw new Error('git is not available on PATH')
         const started = Date.now()
         const repoDir = effectiveRepoDir()
-        const result = await gitSyncRepo(eff.gitBinary, eff.url, eff.branch, repoDir, eff.token)
+        const result = await gitSyncRepo(eff.gitBinary, eff.url, eff.branch, repoDir, eff.token, marketSparsePaths())
         marketState.lastSyncAt = new Date().toISOString()
         marketState.lastResult = { ...result, at: marketState.lastSyncAt, durationMs: Date.now() - started }
         await saveMarketState()
@@ -902,6 +925,7 @@ module.exports = {
               autoSync: eff.autoSync, syncOnStartup: eff.syncOnStartup,
               hasToken: typeof eff.token === 'string' && eff.token !== '',
               syncing: marketSyncRun !== null,
+              sparsePaths: marketSparsePaths() ?? null,
             })
             return
           }
