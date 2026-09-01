@@ -64,6 +64,37 @@ const prim = (name) => P && P[name]
 let sessionsApi = null
 const sessionsSvc = () => sessionsApi
 
+// Composer services (inputTriggers + sessions) for the ＋技能 button: opens
+// the `skill` source (registered by dsh-client-ui-skill) as a menu. Absence
+// hides the button; nothing else depends on it.
+let composerScope = null
+
+/**
+ * Open one registered '/' source over a synthetic collapsed span appended at
+ * the draft end (host toggleCommandMenu 同款调用形状；标准 kit 不暴露光标，
+ * pick 依赖 span-CAS：点击后草稿若再变动则本次 pick 静默作废）。
+ */
+function openTriggerSource(scope, sessionId, input, sourceName) {
+  const inputTriggers = scope && scope.inputTriggers
+  const sessions = scope && scope.sessions
+  if (!inputTriggers || !sessions) return false
+  let actx
+  try { actx = sessions.scope(sessionId) } catch { return false }
+  if (actx === undefined || actx === null) return false
+  let controller
+  try { controller = inputTriggers.sessionOf(actx) } catch { return false }
+  const draft = (input && input.draft) || ''
+  const at = draft.length
+  controller.toggleSource(sourceName, {
+    trigger: '/',
+    query: '',
+    quoted: false,
+    position: draft.trim() === '' ? 'leading' : 'inline',
+    span: { start: at, end: at, draftRev: (input && input.draftRev) || 0 },
+  })
+  return true
+}
+
 // ── Locale ───────────────────────────────────────────────────────────────
 
 const NS = 'skillsManagement'
@@ -173,6 +204,8 @@ const ZH = {
   invocationHint: '关闭后技能保留在库里，但不再注入对话目录（skill 工具也调不到）',
   pathLabel: '路径',
   meTag: '本机',
+  pickSkill: '＋技能',
+  pickSkillTitle: '选择一个技能，其内容将注入本条消息',
 }
 
 const EN = {
@@ -280,6 +313,8 @@ const EN = {
   invocationHint: 'When off, the skill stays in the library but is not injected into conversation catalogs',
   pathLabel: 'Path',
   meTag: 'me',
+  pickSkill: '+ Skill',
+  pickSkillTitle: 'Pick a skill; its content is injected into this message',
 }
 
 // ── Pure helpers ────────────────────────────────────────────────────────
@@ -422,6 +457,8 @@ const STYLE = `<style>
 .sk-menu-item:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .sk-menu-item.on{color:var(--dsw-alias-state-business-primary);font-weight:500}
 .sk-tabpill{background:transparent;border:none;color:var(--dsw-alias-label-secondary);font-family:var(--dsw-font-family)}
+.sk-chip{display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 9px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-secondary);font-family:var(--dsw-font-family);font-size:12px;cursor:pointer;white-space:nowrap}
+.sk-chip:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
 </style>`
 
 // ── Fetch layer ─────────────────────────────────────────────────────────
@@ -1280,7 +1317,7 @@ const CLIENT_NAME = '@weibaohui/skills-management'
 module.exports = {
   name: CLIENT_NAME,
   inject: ['slots', 'locale'],
-  __internals: { NS, ZH, EN, matchSkill, formatSize, formatTime },
+  __internals: { NS, ZH, EN, matchSkill, formatSize, formatTime, openTriggerSource },
   /** Test/host helper: mount a standalone page into any container. */
   __boot(container, opts = {}) {
     ensureStyles()
@@ -1306,6 +1343,13 @@ module.exports = {
           const svc = scope && scope.sessions
           if (svc && typeof svc.open === 'function') sessionsApi = svc
         })
+      }
+    } catch {}
+    // Composer services (inputTriggers + sessions) for the ＋技能 button;
+    // absence hides the button only.
+    try {
+      if (typeof ctx.inject === 'function') {
+        ctx.inject(['inputTriggers', 'sessions'], (scope) => { composerScope = scope })
       }
     } catch {}
     // Locale service is optional at boot order — degrade to EN until present
@@ -1359,5 +1403,36 @@ module.exports = {
       }))
       } catch (e) { (globalThis.__skErrors = globalThis.__skErrors || []).push('settings:' + (e && e.message)); throw e }
     }, 'skills-management: settings section')
+    ctx.effect(() => {
+      try {
+      ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
+        name: 'conversation.input.left',
+        id: CLIENT_NAME,
+        order: 60,
+        locale: NS,
+        label: () => t('pickSkill'),
+        inject: () => ({ t }),
+      }, function SkillButtonSlot(apiProps) {
+        return h(ComposerButtonSlot, {
+          __t: t, icon: '⚡', label: t('pickSkill'), title: t('pickSkillTitle'),
+          source: 'skill', sessionId: apiProps && apiProps.sessionId, input: apiProps && apiProps.input,
+        })
+      }))
+      } catch (e) { (globalThis.__skErrors = globalThis.__skErrors || []).push('input.left:' + (e && e.message)); throw e }
+    }, 'skills-management: input left button')
   },
+}
+
+/** Composer tool-row button: opens a registered '/' source (ui-skill's
+ *  `skill` source) over the session's trigger controller. Hidden while the
+ *  inputTriggers/sessions services are absent. */
+function ComposerButtonSlot(props) {
+  useEffect(ensureStyles, [])
+  const ready = !!(composerScope && composerScope.inputTriggers && composerScope.sessions && props.sessionId)
+  if (!ready) return null
+  return h('button', {
+    className: 'sk-chip',
+    title: props.title || props.label,
+    onClick: () => { openTriggerSource(composerScope, props.sessionId, props.input, props.source) },
+  }, `${props.icon || ''}${props.icon ? ' ' : ''}${props.label}`)
 }

@@ -70,11 +70,35 @@ test('apply registers dictionaries and both slot entries', async () => {
   }
   plugin.apply(ctx)
   assert.deepEqual(calls.map(c => [c[0], c[1]]).sort(), [[NS, 'en'], [NS, 'zh']])
-  assert.equal(registered.length, 2)
+  assert.equal(registered.length, 3)
   const names = registered.map(r => r.name).sort()
-  assert.deepEqual(names, ['settings.section', 'sidebar.footer.action'])
+  assert.deepEqual(names, ['conversation.input.left', 'settings.section', 'sidebar.footer.action'])
   for (const spec of registered) {
     assert.equal(spec.id, plugin.name)
     assert.equal(typeof spec.inject, 'function')
   }
+  // ＋技能按钮槽位：打开 ui-skill 的 'skill' 源
+  const composer = registered.find(r => r.name === 'conversation.input.left')
+  assert.equal(typeof composer, 'object')
+})
+
+test('openTriggerSource toggles via sessionOf with a synthetic end-of-draft span', () => {
+  const { openTriggerSource } = plugin.__internals
+  const calls = []
+  const scope = {
+    sessions: { scope: (id) => ({ id }) },
+    inputTriggers: {
+      sessionOf: (actx) => ({
+        toggleSource: (name, hit) => calls.push({ name, hit, actx }),
+      }),
+    },
+  }
+  const ok = openTriggerSource(scope, 'session-9', { draft: '', draftRev: 3 }, 'skill')
+  assert.equal(ok, true)
+  assert.equal(calls[0].name, 'skill')
+  assert.equal(calls[0].hit.position, 'leading')
+  assert.deepEqual(calls[0].hit.span, { start: 0, end: 0, draftRev: 3 })
+  // 服务缺席 / scope 不可解析 → false（按钮点击无副作用）
+  assert.equal(openTriggerSource(null, 's', {}, 'skill'), false)
+  assert.equal(openTriggerSource({ sessions: { scope: () => undefined }, inputTriggers: { sessionOf: () => ({}) } }, 's', {}, 'skill'), false)
 })
