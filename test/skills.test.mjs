@@ -806,3 +806,87 @@ test('PUT /invocation also covers the user-agents root (~/.agents/skills)', asyn
     await rm(home, { recursive: true, force: true })
   }
 })
+
+// ── 注入开销估算（≈token / 字符）─────────────────────────────────────────
+
+test('usageStat golden values on the cl100k_base ranks (tiktokenizer 同词表同值)', () => {
+  const { usageStat } = plugin.__internals
+  // golden 值已与 tiktokenizer（cl100k_base）人工核对
+  assert.deepEqual(usageStat('hello', 'hello world'), { tokens: 4, chars: 17 })
+  assert.deepEqual(usageStat('自动续跑', '会话结束后自动继续执行，直到任务完成或达到上限'), { tokens: 28, chars: 28 })
+  assert.deepEqual(usageStat('x', ''), { tokens: 2, chars: 2 })
+  // 非字符串 description 容错
+  assert.deepEqual(usageStat('x', undefined), { tokens: 2, chars: 2 })
+})
+
+test('usageStat memoizes per text so rescans skip re-encoding', () => {
+  const { usageStat, usageMemo } = plugin.__internals
+  const text = 'memo-probe\na repeated description for the memo probe'
+  usageMemo.delete(text)
+  const before = usageMemo.size
+  const first = usageStat('memo-probe', 'a repeated description for the memo probe')
+  assert.equal(usageMemo.size, before + 1)
+  const again = usageStat('memo-probe', 'a repeated description for the memo probe')
+  assert.equal(usageMemo.size, before + 1)
+  assert.equal(again.tokens, first.tokens)
+})
+
+test('usageStat degrades to chars-only when the ranks are unavailable', () => {
+  const { usageStat, setUsageEncoderOverride } = plugin.__internals
+  setUsageEncoderOverride(null)
+  try {
+    const stat = usageStat('fallback', 'no encoder here')
+    assert.equal(stat.tokens, undefined)
+    assert.equal(stat.chars, 'fallback\nno encoder here'.length)
+  } finally {
+    setUsageEncoderOverride(undefined)
+  }
+})
+
+test('list and detail endpoints carry tokens/chars on rows', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skills-usage-'))
+  try {
+    await writeSkill(join(root, 'market'), 'src/alpha', { name: 'alpha', description: 'Hello from market skill' })
+    await writeSkill(join(root, 'installed'), 'beta', { name: 'beta', description: 'Installed skill here' })
+
+    const env = setupPlugin({
+      marketDirs: [join(root, 'market')],
+      installedDir: join(root, 'installed'),
+    })
+
+    const list = await env.call('GET', '/skills-management/api')
+    assert.equal(list.status, 200)
+    const mk = list.payload.market.find((s) => s.shortName === 'alpha')
+    assert.equal(typeof mk.tokens, 'number')
+    assert.ok(mk.tokens > 0)
+    assert.equal(mk.chars, 'alpha\nHello from market skill'.length) // 按截断前全文统计
+    const inst = list.payload.installed.find((s) => s.name === 'beta')
+    assert.equal(typeof inst.tokens, 'number')
+    assert.equal(inst.chars, 'beta\nInstalled skill here'.length)
+
+    const detail = await env.call('GET', '/skills-management/api/detail?name=beta')
+    assert.equal(typeof detail.payload.tokens, 'number')
+    assert.equal(detail.payload.chars, 'beta\nInstalled skill here'.length)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('executor drill-in rows carry tokens/chars too', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skills-usage-ex-'))
+  try {
+    await writeSkill(join(root, 'cc'), 'foo', { name: 'foo', description: 'Executor skill desc' })
+    const env = setupPlugin({
+      marketDirs: [join(root, 'market')],
+      installedDir: join(root, 'installed'),
+      executorDirs: { claudecode: join(root, 'cc') },
+    })
+    const scoped = await env.call('GET', '/skills-management/api/executors?executor=claudecode')
+    assert.equal(scoped.status, 200)
+    const foo = scoped.payload.executor.skills.find((s) => s.name === 'foo')
+    assert.equal(typeof foo.tokens, 'number')
+    assert.equal(foo.chars, 'foo\nExecutor skill desc'.length)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
