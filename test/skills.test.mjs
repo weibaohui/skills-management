@@ -73,8 +73,8 @@ async function writeSkill(base, rel, meta) {
 
 test('plugin exports the host-plane contract', () => {
   assert.equal(plugin.name, 'skills-management')
-  // settings 静态注入：token/市场设置必须持久化到宿主 settings 服务
-  assert.deepEqual(plugin.inject, ['skills', 'webServer', 'settings'])
+  // 静态注入：settings（token/市场设置持久化）+ agents/agentDefaultModel/sessions（分享任务进程内执行与打开对话）
+  assert.deepEqual(plugin.inject, ['skills', 'webServer', 'settings', 'agents', 'agentDefaultModel', 'sessions'])
 })
 
 test('extractFrontmatter requires standalone delimiters', () => {

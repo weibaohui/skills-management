@@ -486,7 +486,7 @@ function contentTypeFor(p) {
 
 module.exports = {
   name: 'skills-management',
-  inject: ['skills', 'webServer', 'settings'],
+  inject: ['skills', 'webServer', 'settings', 'agents', 'agentDefaultModel', 'sessions'],
   __internals: { extractFrontmatter, parseSkillMd, invocationPolicy, installDirName, EXECUTOR_DEFS },
 
   apply(ctx, config = {}) {
@@ -759,14 +759,9 @@ module.exports = {
     }, 'skills-management: market auto-sync')
 
     const shareRunJobs = new Map()
-    // Same-process Agent services (the web app's own): when available the
-    // share run streams live; absent compositions fall back to headless spawn.
-    let shareServices = null
-    try {
-      if (ctx.inject && typeof ctx.inject === 'function') {
-        ctx.inject(['agents', 'agentDefaultModel', 'sessions'], (svcs) => { shareServices = svcs })
-      }
-    } catch {}
+    // Same-process Agent services（静态注入：apply 时已就绪；动态 ctx.inject 在
+    // apply 内不触发是平台 gotcha）。
+    const shareServices = { agents: ctx.agents, agentDefaultModel: ctx.agentDefaultModel, sessions: ctx.sessions }
     let providerControl
     const invalidate = () => { if (providerControl !== undefined) providerControl.invalidate() }
 
