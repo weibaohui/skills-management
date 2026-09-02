@@ -42,6 +42,8 @@ window.__ModuleLoader__.load({
         var primaryStyle = Object.assign({}, btnStyle, { background: 'var(--dsw-alias-brand-primary,#4a7dff)', borderColor: 'var(--dsw-alias-brand-primary,#4a7dff)', color: '#fff' })
 
         return function ActionShareDialog(props) {
+          var title = props.title
+          var hint = props.hint
           var labels = props.labels || {}
           var _p = useState(props.initialPrompt || '')
           var prompt = _p[0]; var setPrompt = _p[1]
@@ -964,6 +966,12 @@ window.__ModuleLoader__.load({
       return h('div', { className: 'sk-toast' }, text)
     }
 
+    let _actionShareDialog = null
+    function getActionShareDialog() {
+      if (_actionShareDialog === null) _actionShareDialog = PluginKit.makeActionShareDialog(__React)
+      return _actionShareDialog
+    }
+
     /** 分享抽屉：壳交给 PluginKit（ActionShareDialog），本插件只负责
      *  hasToken 提示、settingsFile 插值与 run/poll 的 API 映射。 */
     function ShareSkillDialog({ t, params, onClose }) {
@@ -975,7 +983,7 @@ window.__ModuleLoader__.load({
       const hasToken = status ? status.hasToken === true : null
       const hint = hasToken === false ? t('shareHintPatMissing') : t('shareHint')
       const initialPrompt = PluginKit.substituteParams(SHARE_PROMPT_ZH, { ...params, settingsFile: (status && status.settingsFile) || '' })
-      return h(PluginKit.ActionShareDialog, {
+      return h(getActionShareDialog(), {
         title: t('shareTitle'), hint, initialPrompt,
         rows: [[t('shareParamName'), params.skillName], [t('shareParamVersion'), params.version || '-'], [t('shareParamDir'), params.resourceDir]],
         labels: { copy: t('copyPrompt'), copied: t('copied'), run: t('runBtn'), running: t('running'), done: t('runDone'), failed: t('runFailed'), outputLabel: t('outputLabel') },
