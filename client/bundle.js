@@ -40,7 +40,8 @@ window.__ModuleLoader__.load({
         var doFetch = options.fetch || (typeof fetch !== 'undefined' ? fetch : null)
         var inputStyle = { width: '100%', minHeight: 190, resize: 'vertical', fontFamily: 'var(--dsw-font-family)', lineHeight: 1.6, fontSize: 12, background: 'var(--dsw-alias-bg-layer-2,transparent)', color: 'inherit', border: '1px solid var(--dsw-alias-border-l2,rgba(128,128,128,.3))', borderRadius: '8px', padding: '10px', boxSizing: 'border-box' }
         var btnStyle = { background: 'transparent', color: 'inherit', border: '1px solid var(--dsw-alias-border-l2,rgba(128,128,128,.3))', borderRadius: '8px', padding: '5px 12px', fontSize: 13, cursor: 'pointer', font: 'inherit' }
-        var primaryStyle = Object.assign({}, btnStyle, { background: 'var(--dsw-alias-brand-primary,#4a7dff)', borderColor: 'var(--dsw-alias-brand-primary,#4a7dff)', color: '#fff' })
+        // 主按钮亮暗跟随：与 skills-management .sk-btn-primary 同款 token 组合
+        var primaryStyle = Object.assign({}, btnStyle, { background: 'var(--dsw-alias-state-business-primary,var(--dsw-alias-brand-primary,#4a7dff))', borderColor: 'transparent', color: 'var(--dsw-alias-label-primary-inverted,#fff)' })
 
         return function ActionShareDialog(props) {
           var title = props.title
