@@ -471,10 +471,10 @@ const SHARE_PROMPT_ZH = [
   '## 关键信息',
   '- 技能目录：{{resourceDir}}（~ 表示当前用户家目录，执行前先展开为绝对路径）',
   '- 官方仓库：weibaohui/ntd-resource（GitCode，API base = https://api.gitcode.com）',
-  '- PAT 位置：~/.dsh/settings.yaml 中 skills-management.market 段的 token 字段（由技能市场设置面板保存）。',
+  '- PAT 位置：{{settingsFile}} 中 skills-management.market 段的 token 字段（由技能市场设置面板保存）。',
   '',
   '## 执行步骤（严格按顺序）',
-  '1. 读取 PAT：读取 ~/.dsh/settings.yaml，定位 skills-management.market 段下的 token 字段。token 是敏感凭据，读取后不要把明文打印到输出、日志或最终结果里。',
+  '1. 读取 PAT：读取 {{settingsFile}}，定位 skills-management.market 段下的 token 字段。token 是敏感凭据，读取后不要把明文打印到输出、日志或最终结果里。',
   '2. 展开技能目录为绝对路径，遍历该目录，收集每个文件的「相对该目录的路径」与内容；跳过 .downloaded_at、.clawhub、.git 三类同步元数据。',
   '3. 把第 1 步读到的 token 作为 HTTP 认证令牌，附加到下面每个 GitCode API 请求的认证头里（bearer 认证方式），不要写成占位符：',
   '   a. 验证用户：`GET https://api.gitcode.com/api/v5/user`，拿到返回的 login 字段——这是 token 真实所属的账号，后续所有 URL 里的 {owner} 一律用它。',
@@ -868,7 +868,11 @@ function ShareSkillDialog({ t, params, onClose, onToast }) {
   const [job, setJob] = useState(null)   // {jobId,status,output,code}
   const [busy, setBusy] = useState(false)
   useEffect(() => {
-    getJson(API + '/market/status').then(d => setHasToken(d.hasToken === true)).catch(() => setHasToken(false))
+    // settingsFile 随 DSH_HOME 变化——由宿主下发真实路径，提示词不再硬编码 ~/.dsh
+    getJson(API + '/market/status').then(d => {
+      setHasToken(d.hasToken === true)
+      if (typeof d.settingsFile === 'string' && d.settingsFile !== '') setPrompt(substituteParams(SHARE_PROMPT_ZH, { ...params, settingsFile: d.settingsFile }))
+    }).catch(() => setHasToken(false))
   }, [])
   // 轮询执行输出,直到关闭/结束
   useEffect(() => {
