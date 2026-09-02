@@ -332,6 +332,44 @@ function truncateDescription(text) {
   return single.length > DESCRIPTION_LIMIT ? single.slice(0, DESCRIPTION_LIMIT) + '…' : single
 }
 
+// ── 注入开销估算（≈token / 字符）─────────────────────────────────────────
+// 技能注入模型 = 名称+描述，两个指标都按该文本统计（字符数即其长度，token 数
+// 用 js-tiktoken 的 cl100k_base 词表估算——与 tiktokenizer 同词表同值）。列表
+// 接口的 description 是截断展示，统计必须喂截断前的全文。DeepSeek 自有分词与
+// tiktoken 有差异，数值用于横向比较而非精确计费；词表加载失败时降级为只出字符数。
+let usageEncoder = null
+let usageEncoderFailed = false
+let usageEncoderOverride  // 测试注入点：undefined 走正常加载，null 强制降级
+function usageEncoderLazy() {
+  if (usageEncoderOverride !== undefined) return usageEncoderOverride
+  if (usageEncoderFailed) return null
+  if (usageEncoder === null) {
+    try {
+      const { Tiktoken } = require('js-tiktoken/lite')
+      usageEncoder = new Tiktoken(require('js-tiktoken/ranks/cl100k_base'))
+    } catch { usageEncoderFailed = true }
+  }
+  return usageEncoder
+}
+const USAGE_MEMO_CAP = 25000
+const usageMemo = new Map()
+function usageStat(name, description) {
+  const desc = typeof description === 'string' ? description : ''
+  const text = `${name || ''}\n${desc}`
+  const stat = { chars: text.length }
+  const enc = usageEncoderLazy()
+  if (enc !== null) {
+    let tokens = usageMemo.get(text)
+    if (tokens === undefined) {
+      tokens = enc.encode(text).length
+      if (usageMemo.size >= USAGE_MEMO_CAP) usageMemo.clear()
+      usageMemo.set(text, tokens)
+    }
+    stat.tokens = tokens
+  }
+  return stat
+}
+
 function expandTilde(p) {
   return p === '~' || p.startsWith('~/') || p.startsWith('~\\') ? join(homedir(), p.slice(2)) : p
 }
@@ -487,7 +525,7 @@ function contentTypeFor(p) {
 module.exports = {
   name: 'skills-management',
   inject: ['skills', 'webServer', 'settings', 'agents', 'agentDefaultModel', 'sessions'],
-  __internals: { extractFrontmatter, parseSkillMd, invocationPolicy, installDirName, EXECUTOR_DEFS },
+  __internals: { extractFrontmatter, parseSkillMd, invocationPolicy, installDirName, EXECUTOR_DEFS, usageStat, usageMemo, setUsageEncoderOverride: (v) => { usageEncoderOverride = v } },
 
   apply(ctx, config = {}) {
     // Explicit marketDirs config wins; otherwise the scan follows the
@@ -582,7 +620,7 @@ module.exports = {
           summary.skillCount += 1
           if (countsOnly) continue
           const { fileCount, totalSize } = await countFilesAndSize(entry.dir)
-          summary.skills.push({ name: listed, relPath: entry.relPath, description: truncateDescription(read.description), keywords: read.keywords, version: read.version, author: read.author, fileCount, totalSize, modifiedAt: read.modifiedAt, modelInvocable: invocationPolicy(read.meta).modelInvocable })
+          summary.skills.push({ name: listed, relPath: entry.relPath, description: truncateDescription(read.description), keywords: read.keywords, version: read.version, author: read.author, fileCount, totalSize, modifiedAt: read.modifiedAt, modelInvocable: invocationPolicy(read.meta).modelInvocable, ...usageStat(listed, read.description) })
         } catch (e) { ctx.logger.warn(`skills-management: skipping ${entry.dir}: ${e && e.message}`) }
       }
       if (summary.skills !== undefined) {
@@ -720,6 +758,21 @@ module.exports = {
     }
 
     let marketSyncRun = null
+    // 注入开销预热：后台把市场技能的 token 统计预先算进 usageStat 的 memo
+    // （分块让出事件循环），避免首次打开市场列表时同步编码 6400 条描述
+    // （~3s）拖慢首屏。市场同步会改内容，成功路径末尾再次触发。
+    let usageWarmSeq = 0
+    const warmUsageMemo = async () => {
+      const seq = ++usageWarmSeq
+      try {
+        const { market } = await discoverAll()
+        for (let i = 0; i < market.length; i++) {
+          if (seq !== usageWarmSeq) return
+          usageStat(market[i].name, market[i].description)
+          if (i % 500 === 499) await new Promise((r) => setImmediate(r))
+        }
+      } catch { /* 预热是尽力而为：miss 的条目由列表路由现算兜底 */ }
+    }
     const runMarketSync = async () => {
       if (marketSyncRun !== null) return marketSyncRun
       marketSyncRun = (async () => {
@@ -734,6 +787,7 @@ module.exports = {
         marketState.lastResult = { ...result, at: marketState.lastSyncAt, durationMs: Date.now() - started }
         await saveMarketState()
         invalidate()
+        warmUsageMemo()
         return { ...marketState.lastResult, url: eff.url, branch: eff.branch, dir: repoDir }
       })().finally(() => { marketSyncRun = null })
       return marketSyncRun
@@ -757,6 +811,13 @@ module.exports = {
       if (typeof timer.unref === 'function') timer.unref()
       return () => clearInterval(timer)
     }, 'skills-management: market auto-sync')
+
+    // 激活后延迟预热 token 统计（给启动路径让路；unref 不拖住退出）
+    ctx.effect(() => {
+      const timer = setTimeout(() => { warmUsageMemo() }, 3000)
+      if (typeof timer.unref === 'function') timer.unref()
+      return () => { usageWarmSeq += 1; clearTimeout(timer) }
+    }, 'skills-management: usage memo warm-up')
 
     const shareRunJobs = new Map()
     // Same-process Agent services（静态注入：apply 时已就绪；动态 ctx.inject 在
@@ -950,8 +1011,8 @@ module.exports = {
             const installedNames = new Set(installed.map((r) => r.name))
             sendJson(res, 200, {
               sources: [...sources.values()],
-              market: market.map((row) => ({ name: row.entry.relPath, shortName: row.name, source: row.entry.relPath.split('/')[0], description: truncateDescription(row.description), keywords: row.keywords, version: row.version, installed: installedNames.has(row.name), totalSize: 0 })),
-              installed: await Promise.all(installed.map(async (row) => { const { fileCount, totalSize } = await countFilesAndSize(row.entry.dir); return { name: row.name, description: truncateDescription(row.description), path: row.entry.dir, fileCount, totalSize, modifiedAt: row.modifiedAt } })),
+              market: market.map((row) => ({ name: row.entry.relPath, shortName: row.name, source: row.entry.relPath.split('/')[0], description: truncateDescription(row.description), keywords: row.keywords, version: row.version, installed: installedNames.has(row.name), totalSize: 0, ...usageStat(row.name, row.description) })),
+              installed: await Promise.all(installed.map(async (row) => { const { fileCount, totalSize } = await countFilesAndSize(row.entry.dir); return { name: row.name, description: truncateDescription(row.description), path: row.entry.dir, fileCount, totalSize, modifiedAt: row.modifiedAt, ...usageStat(row.name, row.description) } })),
             })
             return
           }
@@ -964,7 +1025,8 @@ module.exports = {
             const files = await walkFiles(located.dir, located.dir)
             const { fileCount, totalSize } = await countFilesAndSize(located.dir)
             const { meta, body } = parseSkillMd(content)
-            sendJson(res, 200, { name, shortName: basename(name), dir: displayPath(located.dir), executor: located.executorKey, isInstalled: located.isInstalled, content: body, contentWithMeta: content, meta, files, fileCount, totalSize, modifiedAt: files[0]?.modifiedAt })
+            const usage = usageStat(typeof meta.name === 'string' && meta.name !== '' ? meta.name : basename(name), meta.description)
+            sendJson(res, 200, { name, shortName: basename(name), dir: displayPath(located.dir), executor: located.executorKey, isInstalled: located.isInstalled, content: body, contentWithMeta: content, meta, files, fileCount, totalSize, modifiedAt: files[0]?.modifiedAt, ...usage })
             return
           }
 

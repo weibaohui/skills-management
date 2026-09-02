@@ -44,6 +44,7 @@
   },
   "dependencies": {
     "@weibaohui/dsh-plugin-kit": "^0.2.0",
+    "js-tiktoken": "^1.0.21",
     "yaml": "^2.9.0"
   },
   "devDependencies": {

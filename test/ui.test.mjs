@@ -144,3 +144,38 @@ test('openTriggerSource toggles via sessionOf with a synthetic end-of-draft span
   assert.equal(openTriggerSource(null, 's', {}, 'skill'), false)
   assert.equal(openTriggerSource({ sessions: { scope: () => undefined }, inputTriggers: { sessionOf: () => ({}) } }, 's', {}, 'skill'), false)
 })
+
+// ── 注入开销文案与排序（纯 helper）────────────────────────────────────────
+
+test('usageText renders tokens first, degrades to chars, hides on legacy rows', () => {
+  const { usageText, EN } = plugin.__internals
+  const t = (key, vars) => {
+    let out = EN[key] ?? key
+    if (vars) for (const [k, v] of Object.entries(vars)) out = out.split('{' + k + '}').join(String(v))
+    return out
+  }
+  const full = usageText({ tokens: 4, chars: 17 }, t)
+  assert.equal(full, '≈4 tokens · 17 chars')
+  const charsOnly = usageText({ chars: 9 }, t)
+  assert.equal(charsOnly, '9 chars')
+  assert.equal(usageText({}, t), null)
+})
+
+test('sortSkills orders by the picked metric with missing values sinking', () => {
+  const { sortSkills } = plugin.__internals
+  const rows = [
+    { name: 'no-usage' },
+    { name: 'a', tokens: 3, chars: 30 },
+    { name: 'b', tokens: 9, chars: 10 },
+    { name: 'c', tokens: 3, chars: 20 },
+  ]
+  assert.deepEqual(sortSkills(rows, 'tokens').map(r => r.name), ['b', 'a', 'c', 'no-usage'])
+  assert.deepEqual(sortSkills(rows, 'tokensAsc').map(r => r.name), ['a', 'c', 'b', 'no-usage'])
+  assert.deepEqual(sortSkills(rows, 'chars').map(r => r.name), ['a', 'c', 'b', 'no-usage'])
+  assert.deepEqual(sortSkills(rows, 'default').map(r => r.name), ['no-usage', 'a', 'b', 'c']) // 原序
+  // keyFn：{row, s} 包装数组按内层卡片行排序
+  const wrapped = rows.map(s => ({ row: {}, s }))
+  assert.deepEqual(sortSkills(wrapped, 'tokens', it => it.s).map(it => it.s.name), ['b', 'a', 'c', 'no-usage'])
+  // 不改变原数组
+  assert.deepEqual(rows.map(r => r.name), ['no-usage', 'a', 'b', 'c'])
+})
