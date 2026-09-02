@@ -764,6 +764,7 @@ module.exports = {
     let usageWarmSeq = 0
     const warmUsageMemo = async () => {
       const seq = ++usageWarmSeq
+      if (usageEncoderLazy() === null) return // 降级模式 memo 永远不命中，预热扫描是纯浪费
       try {
         const { market } = await discoverAll()
         for (let i = 0; i < market.length; i++) {
