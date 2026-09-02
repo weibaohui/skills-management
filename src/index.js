@@ -949,6 +949,7 @@ module.exports = {
               hasToken: typeof eff.token === 'string' && eff.token !== '',
               syncing: marketSyncRun !== null,
               sparsePaths: marketSparsePaths() ?? null,
+              settingsFile: join(dshHome(), 'settings.yaml'),
             })
             return
           }
