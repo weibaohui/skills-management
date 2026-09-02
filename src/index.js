@@ -949,6 +949,7 @@ module.exports = {
               hasToken: typeof eff.token === 'string' && eff.token !== '',
               syncing: marketSyncRun !== null,
               sparsePaths: marketSparsePaths() ?? null,
+              settingsFile: join(dshHome(), 'settings.yaml'),
             })
             return
           }
@@ -988,7 +989,7 @@ module.exports = {
             }
             const eff = marketSettings()
             const { token, ...safe } = eff  // token 只写不回读
-            sendJson(res, 200, { settings: safe, hasToken: typeof token === 'string' && token !== '' })
+            sendJson(res, 200, { settings: safe, hasToken: typeof token === 'string' && token !== '', settingsFile: join(dshHome(), 'settings.yaml') })
             return
           }
 
