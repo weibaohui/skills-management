@@ -457,14 +457,6 @@ const EN = {
 // ── Pure helpers ────────────────────────────────────────────────────────
 
 /** ntd ActionButton 同款 {{key}} 替换:split/join 规避正则元字符 */
-function substituteParams(template, params) {
-  let out = template
-  for (const [key, value] of Object.entries(params)) {
-    out = out.split(`{{${key}}}`).join(String(value))
-  }
-  return out
-}
-
 const SHARE_PROMPT_ZH = [
   '请把本地技能「{{skillName}}」{{version}}打包提交到 GitCode 官方仓库，作为一个 PR 供维护者审核。',
   '',
@@ -861,64 +853,25 @@ function InToast({ text }) {
   return h('div', { className: 'sk-toast' }, text)
 }
 
-/** ntd ActionButton 同款分享抽屉:可编辑提示词 + 参数预览 + 复制到会话执行。 */
-function ShareSkillDialog({ t, params, onClose, onToast }) {
-  const [prompt, setPrompt] = useState(substituteParams(SHARE_PROMPT_ZH, params))
-  const [hasToken, setHasToken] = useState(null)
-  const [job, setJob] = useState(null)   // {jobId,status,output,code}
-  const [busy, setBusy] = useState(false)
+/** 分享抽屉：壳交给 PluginKit（ActionShareDialog），本插件只负责
+ *  hasToken 提示、settingsFile 插值与 run/poll 的 API 映射。 */
+function ShareSkillDialog({ t, params, onClose }) {
+  const _st = useState(null)
+  const status = _st[0]; const setStatus = _st[1]
   useEffect(() => {
-    // settingsFile 随 DSH_HOME 变化——由宿主下发真实路径，提示词不再硬编码 ~/.dsh
-    getJson(API + '/market/status').then(d => {
-      setHasToken(d.hasToken === true)
-      if (typeof d.settingsFile === 'string' && d.settingsFile !== '') setPrompt(substituteParams(SHARE_PROMPT_ZH, { ...params, settingsFile: d.settingsFile }))
-    }).catch(() => setHasToken(false))
+    getJson(API + '/market/status').then((d) => setStatus(d)).catch(() => setStatus({ hasToken: false }))
   }, [])
-  // 轮询执行输出,直到关闭/结束
-  useEffect(() => {
-    if (job === null || job.status !== 'running') return
-    const timer = setInterval(() => {
-      getJson(API + '/share/run?id=' + encodeURIComponent(job.jobId))
-        .then(d => setJob(prev => prev && { ...prev, status: d.status, output: d.output || '', code: d.code, sessionId: d.sessionId || prev.sessionId }))
-        .catch(() => {})
-    }, 2000)
-    if (typeof timer.unref === 'function') timer.unref()
-    return () => clearInterval(timer)
-  }, [job && job.status])
-  const doRun = async () => {
-    setBusy(true)
-    try {
-      const r = await fetch(API + '/share/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt, dir: params.resourceDir }) })
-      const d = await r.json().catch(() => ({}))
-      if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status)
-      setJob({ jobId: d.jobId, status: 'running', output: '', code: null })
-    } catch (e) { onToast(t('runFailed') + ': ' + e.message) } finally { setBusy(false) }
-  }
-  const row = (label, value) => h('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 12, padding: '3px 0' } },
-    h('span', { className: 'sk-dir' }, label), h('span', { className: 'sk-hint', style: { wordBreak: 'break-all', textAlign: 'right' } }, value))
-  const copy = () => {
-    navigator.clipboard.writeText(prompt).then(() => onToast(t('promptCopied'))).catch(() => {})
-  }
-  return h(SkDialog, { title: t('shareTitle'), onClose, wide: true },
-    h('div', { style: { display: 'flex', flexDirection: 'column', gap: 10, minWidth: 380 } },
-      h('div', { className: 'sk-hint' }, hasToken === false ? t('shareHintPatMissing') : t('shareHint')),
-      h('div', null,
-        row(t('shareParamName'), params.skillName),
-        row(t('shareParamVersion'), params.version || '-'),
-        row(t('shareParamDir'), params.resourceDir),
-        row(t('shareParamRemote'), params.remotePath)),
-      h('textarea', { className: 'sk-input', value: prompt, onChange: e => setPrompt(e.target.value),
-        style: { width: '100%', minHeight: 190, resize: 'vertical', fontFamily: 'var(--dsw-font-family)', lineHeight: 1.6 } }),
-      job !== null && h('div', null,
-        h('div', { className: 'sk-dir', style: { margin: '4px 0' } },
-          t('outputLabel') + ' · ' + (job.status === 'running' ? t('running') : job.status === 'done' ? t('runDone') : t('runFailed') + (job.code != null ? ' (' + job.code + ')' : ''))),
-        h('pre', { className: 'sk-preview', style: { maxHeight: 220, margin: 0, whiteSpace: 'pre-wrap', fontSize: 12 } },
-          job.output || '…')),
-      h('div', { className: 'sk-dlg-foot', style: { marginTop: 0 } },
-        h(ButtonLite, { onClick: copy }, t('copyPrompt')),
-        job !== null && job.sessionId && sessionsSvc() && h(ButtonLite, { onClick: () => { if (openRunSession(job.sessionId)) onClose() } }, t('openChat')),
-        h(ButtonLite, { primary: true, disabled: busy || (job !== null && job.status === 'running'), onClick: doRun },
-          job !== null && job.status === 'running' ? t('running') : t('runBtn')))))
+  const hasToken = status ? status.hasToken === true : null
+  const hint = hasToken === false ? t('shareHintPatMissing') : t('shareHint')
+  const initialPrompt = PluginKit.substituteParams(SHARE_PROMPT_ZH, { ...params, settingsFile: (status && status.settingsFile) || '' })
+  return h(PluginKit.ActionShareDialog, {
+    title: t('shareTitle'), hint, initialPrompt,
+    rows: [[t('shareParamName'), params.skillName], [t('shareParamVersion'), params.version || '-'], [t('shareParamDir'), params.resourceDir]],
+    labels: { copy: t('copyPrompt'), copied: t('copied'), run: t('runBtn'), running: t('running'), done: t('runDone'), failed: t('runFailed'), outputLabel: t('outputLabel') },
+    run: (prompt) => fetch(API + '/share/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt, dir: params.resourceDir }) }).then((r) => r.json()),
+    poll: (id) => fetch(API + '/share/run?id=' + encodeURIComponent(id)).then((r) => r.json()),
+    onClose,
+  })
 }
 
 /** Market sync settings: status card, sync action, editable url/branch. */

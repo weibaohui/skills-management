@@ -43,6 +43,7 @@
     "node": ">=22.5"
   },
   "dependencies": {
+    "@weibaohui/dsh-plugin-kit": "github:weibaohui/dsh-plugin-kit",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
