@@ -19,7 +19,8 @@ window.__ModuleLoader__.load({
      *   title / hint / rows: [[label, value], ...] / initialPrompt
      *   run: async (prompt) => { jobId }      — 发起执行
      *   poll: async (jobId) => { status, output, code }
-     *   labels: { copy, copied, run, running, done, failed, outputLabel, close }
+     *   labels: { copy, copied, run, running, done, failed, outputLabel, openSession, close }
+     *   onOpenSession: (sessionId) => void                — 可选；job 出现 sessionId 时渲染「打开会话」
      *   onClose
      *
      * 全部样式内联（主题 token + 回退值），消费者无需自带 CSS。
@@ -80,6 +81,8 @@ window.__ModuleLoader__.load({
               setJob({ jobId: r.jobId, status: 'running', output: '', code: null })
             }).catch(function (e) { setError(String(e && e.message)) }).finally(function () { setBusy(false) })
           }
+          var canOpenSession = typeof props.onOpenSession === 'function' && job !== null && job.sessionId
+          var openSession = function () { props.onOpenSession(job.sessionId) }
           var copy = function () {
             if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
               navigator.clipboard.writeText(prompt).then(function () { setCopied(true); setTimeout(function () { setCopied(false) }, 1500) }).catch(function () {})
@@ -103,6 +106,7 @@ window.__ModuleLoader__.load({
                 h('div', { style: { fontSize: 12, opacity: .7, margin: '4px 0' } }, (labels.outputLabel || 'Output') + ' · ' + statusText),
                 h('pre', { style: { maxHeight: 220, margin: 0, overflow: 'auto', whiteSpace: 'pre-wrap', fontSize: 12, background: 'var(--dsw-alias-bg-layer-2,transparent)', border: '1px solid var(--dsw-alias-border-l2,rgba(128,128,128,.2))', borderRadius: '8px', padding: '8px' } }, job.output || '…')) : null,
               h('div', { style: { display: 'flex', gap: 8 } },
+                canOpenSession ? h('button', { onClick: openSession, style: btnStyle }, labels.openSession || 'Open chat') : null,
                 h('button', { onClick: copy, style: btnStyle }, copied ? (labels.copied || 'Copied') : (labels.copy || 'Copy')),
                 h('button', { onClick: doRun, disabled: busy || (job !== null && job.status === 'running'), style: primaryStyle }, job !== null && job.status === 'running' ? (labels.running || 'Running…') : (labels.run || 'Run')))))
         }
