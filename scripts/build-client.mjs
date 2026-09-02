@@ -23,6 +23,18 @@ const pkg = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8'))
 
 const source = readFileSync(sourcePath, 'utf8')
 
+// 共享工具箱内联（@weibaohui/dsh-plugin-kit/client/source.js）：构建期打进
+// bundle；kit 不在时静默跳过（消费者需保证不触发 PluginKit 分支）
+let kitSource = ''
+try {
+  const { createRequire } = await import('node:module')
+  const kitPath = createRequire(import.meta.url).resolve('@weibaohui/dsh-plugin-kit/client/source.js')
+  kitSource = readFileSync(kitPath, 'utf8')
+} catch { /* kit 未安装 */ }
+const kitIndented = kitSource === ''
+  ? ''
+  : kitSource.split('\n').map((line) => (line.length === 0 ? line : '    ' + line)).join('\n') + '\n'
+
 const banner = `/* Generated from client/index.js by scripts/build-client.mjs — do not edit by hand.
  * Regenerate with: npm run build:client
  */
@@ -49,5 +61,5 @@ const indented = source
   .map((line) => (line.length === 0 ? line : '    ' + line))
   .join('\n')
 
-writeFileSync(bundlePath, banner + indented + footer)
+writeFileSync(bundlePath, banner + kitIndented + indented + footer)
 console.log(`built ${bundlePath} (${Buffer.byteLength(bundlePath === bundlePath ? banner + indented + footer : '', 'utf8')} bytes)`)
