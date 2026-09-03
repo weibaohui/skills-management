@@ -323,6 +323,117 @@ test('executors endpoint variants: summary mode and single-source drill-in', asy
   }
 })
 
+test('executor-settings sheet: GET lists all built-ins with flags, PUT applies runtime changes', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skills-sheet-'))
+  try {
+    await writeSkill(join(root, 'cx'), 'zeds', { name: 'zeds', description: 'From runtime-overridden codex' })
+    await writeSkill(join(root, 'mc'), 'local-shot', { name: 'local-shot', description: 'From custom executor' })
+    await writeSkill(join(root, 'installed'), 'mine', { name: 'mine', description: 'dsh local' })
+
+    const env = setupPlugin({
+      marketDirs: [join(root, 'market')],
+      installedDir: join(root, 'installed'),
+      disabledExecutors: ['zcode'], // cordis 停用：管理面板仍要列出（UI 置灰）
+    })
+
+    // GET：全量内置 + 每行可编辑性标记；目录是 raw 默认值（~ 形式）
+    const sheet = await env.call('GET', '/skills-management/api/executor-settings')
+    assert.equal(sheet.status, 200)
+    const rows = sheet.payload.executors
+    assert.equal(rows[0].key, 'dsh')
+    assert.equal(rows[0].locked, true)
+    const zc = rows.find((r) => r.key === 'zcode')
+    assert.equal(zc.disabled, true)
+    assert.equal(zc.managedByConfig, false)
+    assert.equal(zc.dir, '~/.zcode/skills')
+    const cc = rows.find((r) => r.key === 'claudecode')
+    assert.equal(cc.dir, '~/.claude/skills')
+    assert.equal(cc.overridden, false)
+    assert.ok(!rows.some((r) => r.source === 'custom'))
+    assert.ok(sheet.payload.settingsFile.endsWith('settings.yaml'))
+
+    // PUT：目录覆盖 + 停用 + 新增，扫描/定位立即走动态 rows
+    const put = await env.call('PUT', '/skills-management/api/executor-settings', {
+      dirs: { codex: join(root, 'cx') },
+      disabled: ['kilo', 'pi'],
+      extra: [{ key: 'my-cli', label: 'My CLI', dir: join(root, 'mc') }],
+    })
+    assert.equal(put.status, 200)
+    assert.equal(put.payload.executors.find((r) => r.key === 'codex').overridden, true)
+    // 管理面板投影连停用行也列出（UI 置灰），只断言标记
+    assert.equal(put.payload.executors.find((r) => r.key === 'kilo').disabled, true)
+
+    const scan = await env.call('GET', '/skills-management/api/executors?executor=codex')
+    assert.equal(scan.status, 200)
+    assert.deepEqual(scan.payload.executor.skills.map((s) => s.name), ['zeds'])
+    const custom = await env.call('GET', '/skills-management/api/executors?executor=my-cli')
+    assert.equal(custom.status, 200)
+    assert.equal(custom.payload.executor.source, 'custom')
+    assert.equal(custom.payload.executor.label, 'My CLI')
+    const gone = await env.call('GET', '/skills-management/api/executors?executor=kilo')
+    assert.equal(gone.status, 400)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('executor-settings PUT rejects locked/unknown/duplicate/invalid rows', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skills-putval-'))
+  try {
+    const env = setupPlugin({ marketDirs: [join(root, 'market')], installedDir: join(root, 'installed') })
+    const cases = [
+      [{ dirs: { dsh: '/tmp/x' }, disabled: [], extra: [] }, /dsh.*locked/],
+      [{ dirs: {}, disabled: ['dsh'], extra: [] }, /dsh.*cannot be disabled/],
+      [{ dirs: { nope: '/tmp/x' }, disabled: [], extra: [] }, /unknown executor/],
+      [{ dirs: {}, disabled: [], extra: [{ key: 'Bad_Key', label: 'x', dir: '/tmp/y' }] }, /kebab/],
+      [{ dirs: {}, disabled: [], extra: [{ key: 'codex', label: 'x', dir: '/tmp/y' }] }, /already exists/],
+      [{ dirs: {}, disabled: [], extra: [{ key: 'my-cli', label: 'x', dir: '' }] }, /non-empty string/],
+    ]
+    for (const [body, re] of cases) {
+      const res = await env.call('PUT', '/skills-management/api/executor-settings', body)
+      assert.equal(res.status, 400, `expected 400 for ${JSON.stringify(body)}`)
+      assert.match(res.payload.error, re)
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('executor-settings cordis config wins over runtime sheet; empty PUT restores defaults', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skills-prio-'))
+  try {
+    await writeSkill(join(root, 'cc'), 'cordis-one', { name: 'cordis-one', description: 'cordis root' })
+    await writeSkill(join(root, 'runtime'), 'runtime-one', { name: 'runtime-one', description: 'runtime root' })
+    const env = setupPlugin({
+      marketDirs: [join(root, 'market')],
+      installedDir: join(root, 'installed'),
+      executorDirs: { claudecode: join(root, 'cc') }, // cordis 静态配置
+    })
+    // runtime 想覆盖同一 key：被 cordis 压制
+    await env.call('PUT', '/skills-management/api/executor-settings', {
+      dirs: { claudecode: join(root, 'runtime') },
+      disabled: [],
+      extra: [{ key: 'temp', label: 'Temp', dir: join(root, 'runtime') }],
+    })
+    let scan = await env.call('GET', '/skills-management/api/executors?executor=claudecode')
+    assert.deepEqual(scan.payload.executor.skills.map((s) => s.name), ['cordis-one'])
+    let sheet = await env.call('GET', '/skills-management/api/executor-settings')
+    assert.equal(sheet.payload.executors.find((r) => r.key === 'claudecode').managedByConfig, true)
+    assert.equal(sheet.payload.executors.some((r) => r.key === 'temp'), true)
+
+    // 恢复默认：整表清空 → runtime 自定义消失，cordis 根不受影响
+    const restore = await env.call('PUT', '/skills-management/api/executor-settings', { dirs: {}, disabled: [], extra: [] })
+    assert.equal(restore.status, 200)
+    assert.ok(!restore.payload.executors.some((r) => r.key === 'temp'))
+    sheet = await env.call('GET', '/skills-management/api/executor-settings')
+    assert.ok(!sheet.payload.executors.some((r) => r.key === 'temp'))
+    scan = await env.call('GET', '/skills-management/api/executors?executor=claudecode')
+    assert.deepEqual(scan.payload.executor.skills.map((s) => s.name), ['cordis-one'])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('detail and file APIs accept an executor scope', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-skills-detail-'))
   try {
@@ -691,7 +802,7 @@ test('market settings persist through the host settings service when present', a
       marketRepoDir: join(root, 'checkout'),
       marketSync: { url: 'https://example.com/x.git', syncOnStartup: false, autoSync: false },
     })
-    assert.deepEqual(registrations, ['skills-management-market'], 'registers the market settings namespace on the static settings service')
+    assert.deepEqual(registrations, ['skills-management-market', 'skills-management-executors'], 'registers the market + executor settings namespaces on the static settings service')
 
     const call = (method, url, body) => new Promise((fulfil) => {
       const chunks = []

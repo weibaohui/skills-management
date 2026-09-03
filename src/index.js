@@ -507,6 +507,26 @@ function marketSettingsSchema() {
   })
 }
 
+// ── Executor（本机技能来源）运行时 sheet ─────────────────────────────────
+// 内置表 EXECUTOR_DEFS 永远是默认值，这份 sheet 只存用户增量（目录覆盖 /
+// 停用 / 新增），所以「恢复默认」= 清空整个 section。与 cordis 静态配置
+// （executorDirs/disabledExecutors/extraExecutors）的优先级：cordis 最高。
+const EXECUTOR_SETTINGS_NS = 'skills-management-executors'
+
+function executorSettingsSchema() {
+  if (!Schema) return null
+  return Schema.object({
+    dirs: Schema.dict(Schema.string()),      // 内置 key → 目录覆盖（dsh 锁定不接受）
+    disabled: Schema.array(Schema.string()), // 停用的内置 key
+    extra: Schema.array(Schema.object({      // 用户新增执行器
+      key: Schema.string(),
+      label: Schema.string(),
+      dir: Schema.string(),
+    })),
+  })
+}
+const EXECUTOR_SHEET_DEFAULTS = Object.freeze({ dirs: {}, disabled: [], extra: [] })
+
 function mergeMarketSync(config, overrides) {
   const cfg = (config && config.marketSync && typeof config.marketSync === 'object') ? config.marketSync : {}
   return { ...DEFAULT_MARKET_SYNC, ...cfg, ...(overrides || {}) }
@@ -555,35 +575,96 @@ module.exports = {
     const marketModelInvocable = config.marketModelInvocable === true
 
     // ── Executor (on-machine source) rows ──
-    // dsh first (its root is installedDir); then known defs minus disabled;
-    // then user extras. `executorDirs` overrides per-key roots, which also
-    // makes scans testable without touching the real $HOME.
+    // dsh first (its root is the installed library, locked); then known defs
+    // minus disabled; then user extras. Rows are recomputed per request so
+    // runtime edits (executor-settings API → settings.yaml) apply without a
+    // restart. Per-key priority: cordis 静态配置 > runtime sheet > 默认表，
+    // `executorDirs` overrides keep making scans testable without $HOME.
     const executorDirsOverride = config.executorDirs !== undefined && config.executorDirs !== null && typeof config.executorDirs === 'object' ? config.executorDirs : {}
     const disabledExecutors = new Set(Array.isArray(config.disabledExecutors) ? config.disabledExecutors : [])
-    const seenKeys = new Set()
-    const executorRows = []
-    for (const def of EXECUTOR_DEFS) {
-      if (disabledExecutors.has(def.key)) continue
-      let root
-      if (def.key === 'dsh') root = installedDir
-      else if (executorDirsOverride[def.key] !== undefined) root = resolve(expandTilde(String(executorDirsOverride[def.key])))
-      else root = def.sub !== undefined ? join(homedir(), ...def.sub.split('/')) : undefined
-      if (seenKeys.has(def.key)) continue
-      seenKeys.add(def.key)
-      executorRows.push({ key: def.key, label: def.label, root, readOnly: def.readOnly === true })
+    const cordisExtras = (Array.isArray(config.extraExecutors) ? config.extraExecutors : []).filter((e) => e !== null && typeof e === 'object')
+    let executorSettingsScope = null
+    const executorSettingsOverrides = {} // fallback sheet when the service is absent
+    const runtimeSheet = () => {
+      const raw = executorSettingsScope && typeof executorSettingsScope.get === 'function'
+        ? executorSettingsScope.get()
+        : executorSettingsOverrides
+      const v = raw && typeof raw === 'object' ? raw : {}
+      return {
+        dirs: v.dirs !== null && typeof v.dirs === 'object' && !Array.isArray(v.dirs) ? v.dirs : {},
+        disabled: Array.isArray(v.disabled) ? v.disabled : [],
+        extra: Array.isArray(v.extra) ? v.extra : [],
+      }
     }
-    for (const extra of Array.isArray(config.extraExecutors) ? config.extraExecutors : []) {
-      if (extra === null || typeof extra !== 'object') continue
-      if (typeof extra.key !== 'string' || extra.key === '') continue
-      if (typeof extra.dir !== 'string' || extra.dir === '') continue
-      if (seenKeys.has(extra.key)) continue
-      seenKeys.add(extra.key)
-      executorRows.push({
-        key: extra.key,
-        label: typeof extra.label === 'string' && extra.label !== '' ? extra.label : extra.key,
-        root: resolve(expandTilde(extra.dir)),
-        readOnly: extra.readOnly === true,
-      })
+    const computeExecutorRows = () => {
+      const sheet = runtimeSheet()
+      const runtimeDisabled = new Set(sheet.disabled)
+      const rows = []
+      const seen = new Set()
+      const pushExtra = (extra, locked) => {
+        if (extra === null || typeof extra !== 'object') return
+        if (typeof extra.key !== 'string' || extra.key === '') return
+        if (typeof extra.dir !== 'string' || extra.dir === '') return
+        if (seen.has(extra.key)) return
+        seen.add(extra.key)
+        rows.push({
+          key: extra.key,
+          label: typeof extra.label === 'string' && extra.label !== '' ? extra.label : extra.key,
+          root: resolve(expandTilde(extra.dir)),
+          readOnly: extra.readOnly === true,
+          source: 'custom',
+          locked: locked === true,
+        })
+      }
+      for (const def of EXECUTOR_DEFS) {
+        if (disabledExecutors.has(def.key) || runtimeDisabled.has(def.key)) continue
+        let root
+        if (def.key === 'dsh') root = installedDir
+        else if (executorDirsOverride[def.key] !== undefined) root = resolve(expandTilde(String(executorDirsOverride[def.key])))
+        else if (typeof sheet.dirs[def.key] === 'string' && sheet.dirs[def.key] !== '') root = resolve(expandTilde(sheet.dirs[def.key]))
+        else root = def.sub !== undefined ? join(homedir(), ...def.sub.split('/')) : undefined
+        if (seen.has(def.key)) continue
+        seen.add(def.key)
+        rows.push({ key: def.key, label: def.label, root, readOnly: def.readOnly === true, source: 'builtin', locked: def.key === 'dsh' })
+      }
+      for (const extra of cordisExtras) pushExtra(extra, true)
+      for (const extra of sheet.extra) pushExtra(extra, false)
+      return rows
+    }
+    /** 管理面板投影：全部内置（停用的也列，UI 置灰）+ 自定义，带可编辑性标记。 */
+    const executorSheetProjection = () => {
+      const sheet = runtimeSheet()
+      const runtimeDisabled = new Set(sheet.disabled)
+      const executors = []
+      for (const def of EXECUTOR_DEFS) {
+        const byConfig = executorDirsOverride[def.key] !== undefined
+        const runtimeOverridden = typeof sheet.dirs[def.key] === 'string' && sheet.dirs[def.key] !== ''
+        executors.push({
+          key: def.key,
+          label: def.label,
+          source: 'builtin',
+          locked: def.key === 'dsh',
+          managedByConfig: byConfig,
+          disabled: def.key !== 'dsh' && (disabledExecutors.has(def.key) || runtimeDisabled.has(def.key)),
+          overridden: runtimeOverridden,
+          defaultDir: def.key === 'dsh' ? displayPath(installedDir) : def.sub !== undefined ? '~/' + def.sub : '',
+          dir: def.key === 'dsh'
+            ? displayPath(installedDir)
+            : byConfig ? displayPath(resolve(expandTilde(String(executorDirsOverride[def.key]))))
+            : runtimeOverridden ? sheet.dirs[def.key]
+            : def.sub !== undefined ? '~/' + def.sub : '',
+        })
+      }
+      for (const extra of cordisExtras) {
+        if (typeof extra.key !== 'string' || extra.key === '' || typeof extra.dir !== 'string' || extra.dir === '') continue
+        executors.push({ key: extra.key, label: typeof extra.label === 'string' && extra.label !== '' ? extra.label : extra.key, source: 'custom', locked: false, managedByConfig: true, disabled: false, dir: extra.dir })
+      }
+      for (const extra of sheet.extra) {
+        if (extra === null || typeof extra !== 'object') continue
+        if (typeof extra.key !== 'string' || extra.key === '' || typeof extra.dir !== 'string' || extra.dir === '') continue
+        executors.push({ key: extra.key, label: typeof extra.label === 'string' && extra.label !== '' ? extra.label : extra.key, source: 'custom', locked: false, managedByConfig: false, disabled: false, dir: extra.dir })
+      }
+      return executors
     }
 
     async function discoverAll() {
@@ -607,7 +688,7 @@ module.exports = {
      * `skills` stays undefined — callers get `skillCount` only.
      */
     async function scanExecutor(row, countsOnly = false) {
-      const summary = { key: row.key, label: row.label, dir: displayPath(row.root), dirExists: false, readOnly: row.readOnly, skillCount: 0 }
+      const summary = { key: row.key, label: row.label, dir: displayPath(row.root), dirExists: false, readOnly: row.readOnly, source: row.source, locked: row.locked === true, skillCount: 0 }
       if (!countsOnly) summary.skills = []
       try { await fsP.access(row.root) } catch { return summary }
       summary.dirExists = true
@@ -633,7 +714,7 @@ module.exports = {
     }
 
     function findExecutorRow(key) {
-      return executorRows.find((row) => row.key === key)
+      return computeExecutorRows().find((row) => row.key === key)
     }
 
     /**
@@ -743,6 +824,9 @@ module.exports = {
       try {
         settingsScope = ctx.settings.register(MARKET_SETTINGS_NS, marketSettingsSchema(), { base: baseSettings() })
       } catch (e) { ctx.logger.warn(`skills-management: settings register: ${e && e.message}`) }
+      try {
+        executorSettingsScope = ctx.settings.register(EXECUTOR_SETTINGS_NS, executorSettingsSchema(), { base: EXECUTOR_SHEET_DEFAULTS })
+      } catch (e) { ctx.logger.warn(`skills-management: executor settings register: ${e && e.message}`) }
     }
     const saveMarketState = async () => {
       // 0600: the state file may carry the access token
@@ -958,6 +1042,63 @@ module.exports = {
             return
           }
 
+          // GET /skills-management/api/executor-settings → 执行器目录管理面板：
+          // 全部内置（停用的也在，UI 置灰）+ 自定义，带每行可编辑性标记。
+          if (req.method === 'GET' && apiPath.endsWith('/skills-management/api/executor-settings')) {
+            sendJson(res, 200, { executors: executorSheetProjection(), settingsFile: join(dshHome(), 'settings.yaml') })
+            return
+          }
+
+          // PUT /skills-management/api/executor-settings — body 就是下一份运行时
+          // sheet {dirs, disabled, extra}。走 replace 整体替换（update 深合并
+          // 删不掉 dict 里的键，恢复默认/删除行都需要整体覆写）；校验失败抛错 →
+          // 外层 catch 回 400，持久化发生在校验通过之后。
+          if (req.method === 'PUT' && apiPath.endsWith('/skills-management/api/executor-settings')) {
+            const body = await readJsonBody(req)
+            const dirs = {}
+            if (body.dirs !== undefined && body.dirs !== null) {
+              if (typeof body.dirs !== 'object' || Array.isArray(body.dirs)) throw new Error('dirs must be an object of executor key → directory')
+              for (const [key, value] of Object.entries(body.dirs)) {
+                if (key === 'dsh') throw new Error("executor 'dsh' is locked: its root is the installed skill library")
+                if (!EXECUTOR_DEFS.some((d) => d.key === key)) throw new Error(`unknown executor '${key}'`)
+                if (typeof value !== 'string' || value.trim() === '') throw new Error(`dir for '${key}' must be a non-empty string`)
+                dirs[key] = value.trim()
+              }
+            }
+            const disabled = []
+            if (body.disabled !== undefined && body.disabled !== null) {
+              if (!Array.isArray(body.disabled)) throw new Error('disabled must be an array of executor keys')
+              for (const item of body.disabled) {
+                const key = String(item)
+                if (key === 'dsh') throw new Error("executor 'dsh' cannot be disabled")
+                if (!EXECUTOR_DEFS.some((d) => d.key === key)) throw new Error(`unknown executor '${key}'`)
+                disabled.push(key)
+              }
+            }
+            const extra = []
+            if (body.extra !== undefined && body.extra !== null) {
+              if (!Array.isArray(body.extra)) throw new Error('extra must be an array of {key, label, dir}')
+              for (const item of body.extra) {
+                if (item === null || typeof item !== 'object') throw new Error('extra entries must be objects')
+                const key = typeof item.key === 'string' ? item.key.trim() : ''
+                if (!KEBAB_NAME_RE.test(key)) throw new Error(`executor key '${key || '(empty)'}' must be kebab-case (a-z 0-9 -)`)
+                if (EXECUTOR_DEFS.some((d) => d.key === key) || extra.some((e) => e.key === key)) throw new Error(`executor key '${key}' already exists`)
+                if (typeof item.dir !== 'string' || item.dir.trim() === '') throw new Error(`dir for '${key}' must be a non-empty string`)
+                extra.push({ key, label: typeof item.label === 'string' && item.label.trim() !== '' ? item.label.trim() : key, dir: item.dir.trim() })
+              }
+            }
+            const section = { dirs, disabled, extra }
+            if (executorSettingsScope && typeof executorSettingsScope.replace === 'function') {
+              await executorSettingsScope.replace(section)
+            } else if (executorSettingsScope && typeof executorSettingsScope.update === 'function') {
+              await executorSettingsScope.update(section)
+            } else {
+              Object.assign(executorSettingsOverrides, section)
+            }
+            sendJson(res, 200, { executors: executorSheetProjection(), settingsFile: join(dshHome(), 'settings.yaml') })
+            return
+          }
+
           // POST /skills-management/api/share/run {prompt, dir} → real headless run
           if (req.method === 'POST' && apiPath.endsWith('/skills-management/api/share/run')) {
             const body = await readJsonBody(req)
@@ -994,7 +1135,7 @@ module.exports = {
             }
             const countsOnly = query.get('mode') === 'summary'
             const executors = []
-            for (const row of executorRows) executors.push(await scanExecutor(row, countsOnly))
+            for (const row of computeExecutorRows()) executors.push(await scanExecutor(row, countsOnly))
             sendJson(res, 200, { executors })
             return
           }

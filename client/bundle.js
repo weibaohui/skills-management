@@ -355,6 +355,27 @@ window.__ModuleLoader__.load({
       tabMarket: '市场',
       tabSources: '来源',
       cardsHint: '选择一个智能体工具浏览它的技能，或一次查看全部',
+      executorSettings: '执行器目录',
+      executorSettingsHint: '管理本机各执行器的技能目录：内置来源可改目录、可停用；也可新增自定义来源。保存后立即生效，无需重启。',
+      execSourceBuiltin: '内置',
+      execSourceCustom: '自定义',
+      execDisabledTag: '已停用',
+      execManagedTag: '由插件配置文件管理',
+      execLockedTag: '锁定（本插件安装库）',
+      execKeyLabel: '标识 (key)',
+      execNameLabel: '显示名',
+      execDirLabel: '技能目录',
+      execEnabledLabel: '启用',
+      execAdd: '新增执行器',
+      execRemove: '删除',
+      execRestore: '恢复默认',
+      execRestoreConfirm: '确认恢复默认？将清空全部目录修改、停用状态与自定义执行器。',
+      execKeyPlaceholder: '如 my-cli（小写字母、数字、连字符）',
+      execNamePlaceholder: '显示名（可留空，默认同 key）',
+      execDirPlaceholder: '如 ~/.my-cli/skills',
+      execKeyInvalid: 'key 必须是小写字母/数字/连字符（kebab-case）',
+      execKeyDup: 'key 与现有执行器重复',
+      execDirRequired: '目录不能为空',
       marketCardsHint: '选择一个来源仓库浏览其技能，或一次查看全部',
       marketLoading: '正在加载市场目录…',
       marketSettings: '市场设置',
@@ -476,6 +497,27 @@ window.__ModuleLoader__.load({
       tabMarket: 'Market',
       tabSources: 'Sources',
       cardsHint: 'Pick an agent tool to browse its skills, or view everything at once',
+      executorSettings: 'Executor dirs',
+      executorSettingsHint: 'Manage the skill directories of on-machine executors: built-in sources can be redirected or disabled; custom sources can be added. Changes apply immediately, no restart.',
+      execSourceBuiltin: 'built-in',
+      execSourceCustom: 'custom',
+      execDisabledTag: 'disabled',
+      execManagedTag: 'managed by plugin config',
+      execLockedTag: 'locked (this plugin\'s library)',
+      execKeyLabel: 'Key',
+      execNameLabel: 'Display name',
+      execDirLabel: 'Skills dir',
+      execEnabledLabel: 'Enabled',
+      execAdd: 'Add executor',
+      execRemove: 'Remove',
+      execRestore: 'Restore defaults',
+      execRestoreConfirm: 'Restore defaults? This clears all dir overrides, disabled flags and custom executors.',
+      execKeyPlaceholder: 'e.g. my-cli (lowercase letters, digits, hyphens)',
+      execNamePlaceholder: 'Display name (optional, defaults to key)',
+      execDirPlaceholder: 'e.g. ~/.my-cli/skills',
+      execKeyInvalid: 'key must be kebab-case (a-z 0-9 -)',
+      execKeyDup: 'key conflicts with an existing executor',
+      execDirRequired: 'directory is required',
       marketCardsHint: 'Pick a source repo to browse its skills, or view everything at once',
       marketLoading: 'Loading market catalog…',
       marketSettings: 'Market Settings',
@@ -1145,6 +1187,118 @@ window.__ModuleLoader__.load({
                 h(ButtonLite, { primary: true, onClick: doSync }, busy ? t('syncing') : t('syncNow')))]))
     }
 
+    /** 执行器目录管理：内置行可改目录/停用（dsh 锁定；cordis 配置管理的行只展示），
+     *  自定义行可增删改。保存 = 整表 PUT executor-settings（replace 语义），服务端
+     *  逐行校验（key kebab、重复、dsh 锁定），改完即时生效无需重启。 */
+    function ExecutorSettingsDialog({ t, onClose, onToast, onChanged }) {
+      const [rows, setRows] = useState(null)
+      const [busy, setBusy] = useState(false)
+      const [restoreArmed, setRestoreArmed] = useState(false)
+
+      const applySheet = (d) => setRows(Array.isArray(d && d.executors) ? d.executors : [])
+      const refresh = () => getJson(API + '/executor-settings')
+        .then(applySheet)
+        .catch(e => onToast(t('operationFailed') + ': ' + e.message))
+      useEffect(() => { refresh() }, [])
+
+      const KEBAB = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+      const patchRow = (index, patch) => setRows(rs => rs.map((r, i) => i === index ? { ...r, ...patch } : r))
+      const removeRow = (index) => setRows(rs => rs.filter((_, i) => i !== index))
+      const addRow = () => setRows(rs => [...rs, { key: '', label: '', dir: '', source: 'custom', locked: false, managedByConfig: false, disabled: false, overridden: false, defaultDir: '' }])
+
+      const validate = () => {
+        const customs = rows.filter(r => r.source === 'custom' && !r.managedByConfig)
+        for (const r of customs) {
+          if (!KEBAB.test(String(r.key || '').trim())) return t('execKeyInvalid')
+          if (!String(r.dir || '').trim()) return t('execDirRequired')
+        }
+        const keys = customs.map(r => String(r.key || '').trim())
+        if (keys.some((k, i) => keys.indexOf(k) !== i)) return t('execKeyDup')
+        return undefined
+      }
+
+      const saveSheet = async (sheet) => {
+        const r = await fetch(API + '/executor-settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sheet) })
+        const d = await r.json().catch(() => ({}))
+        if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status)
+        applySheet(d)
+        setRestoreArmed(false)
+        onToast(t('saved'))
+        onChanged && onChanged()
+      }
+      const doSave = async () => {
+        if (!rows) return
+        const err = validate()
+        if (err) { onToast(t('operationFailed') + ': ' + err); return }
+        setBusy(true)
+        try {
+          const dirs = {}
+          const disabled = []
+          for (const r of rows) {
+            if (r.source !== 'builtin' || r.locked || r.managedByConfig) continue
+            if (r.disabled) disabled.push(r.key)
+            const dir = String(r.dir || '').trim()
+            // 等于默认值的覆盖不落盘（保持 sheet 干净）；已在 sheet 里的条目原样带回
+            if (dir !== '' && (r.overridden || dir !== r.defaultDir)) dirs[r.key] = dir
+          }
+          const extra = rows
+            .filter(r => r.source === 'custom' && !r.managedByConfig)
+            .map(r => ({ key: String(r.key || '').trim(), label: String(r.label || '').trim() || String(r.key || '').trim(), dir: String(r.dir || '').trim() }))
+          await saveSheet({ dirs, disabled, extra })
+        } catch (e) { onToast(t('operationFailed') + ': ' + e.message) } finally { setBusy(false) }
+      }
+      const doRestore = async () => {
+        if (!restoreArmed) { setRestoreArmed(true); return }
+        setBusy(true)
+        try { await saveSheet({ dirs: {}, disabled: [], extra: [] }) }
+        catch (e) { onToast(t('operationFailed') + ': ' + e.message) } finally { setBusy(false) }
+      }
+
+      const tag = (text, tone) => h('span', { className: 'sk-tag' + (tone ? ' ' + tone : '') }, text)
+      const rowEl = (r, i) => {
+        const editable = !r.locked && !r.managedByConfig
+        return h('div', { key: (r.key || 'new') + i, style: { display: 'flex', flexDirection: 'column', gap: 6,
+            padding: '8px 10px', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 10, opacity: r.disabled ? 0.55 : 1 } },
+          h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+            h('span', { className: 'sk-tag' }, r.source === 'builtin' ? t('execSourceBuiltin') : t('execSourceCustom')),
+            r.source === 'custom' && editable
+              ? h('input', { className: 'sk-input', value: r.key, placeholder: t('execKeyPlaceholder'), style: { width: 160 }, onChange: e => patchRow(i, { key: e.target.value }) })
+              : h('span', { className: 'sk-title' }, r.label),
+            r.source === 'custom' && editable
+              ? h('input', { className: 'sk-input', value: r.label, placeholder: t('execNamePlaceholder'), style: { width: 140 }, onChange: e => patchRow(i, { label: e.target.value }) })
+              : null,
+            r.locked && tag(t('execLockedTag')),
+            !r.locked && r.managedByConfig && tag(t('execManagedTag')),
+            r.disabled && tag(t('execDisabledTag'), 'danger'),
+            h('span', { style: { flex: 1 } }),
+            r.source === 'builtin' && editable
+              ? h('label', { style: { display: 'flex', alignItems: 'center', gap: 4, fontSize: 12.5, color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap', cursor: 'pointer' } },
+                  h('input', { type: 'checkbox', checked: !r.disabled, onChange: e => patchRow(i, { disabled: !e.target.checked }) }), t('execEnabledLabel'))
+              : null,
+            r.source === 'custom' && editable
+              ? h(ButtonLite, { small: true, onClick: () => removeRow(i) }, t('execRemove'))
+              : null),
+          editable
+            ? h('input', { className: 'sk-input', value: r.dir, placeholder: t('execDirPlaceholder'), style: { width: '100%' }, onChange: e => patchRow(i, { dir: e.target.value }) })
+            : h('div', { className: 'sk-dir' }, r.dir))
+      }
+
+      return h(SkDialog, { title: t('executorSettings'), onClose, wide: true },
+        rows === null
+          ? h(Spinner, { label: '…' })
+          : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } }, [
+              h('div', { className: 'sk-hint' }, t('executorSettingsHint')),
+              ...rows.map(rowEl),
+              h('div', { style: { textAlign: 'center' } },
+                h(ButtonLite, { small: true, onClick: addRow }, '+ ' + t('execAdd'))),
+              restoreArmed && h('div', { className: 'sk-tag danger', style: { alignSelf: 'flex-end' } }, t('execRestoreConfirm')),
+              h('div', { className: 'sk-dlg-foot', style: { marginTop: 2 } },
+                h(ButtonLite, { onClick: doRestore }, t('execRestore')),
+                h('span', { style: { flex: 1 } }),
+                h(ButtonLite, { primary: true, disabled: busy, onClick: doSave }, t('save'))),
+            ]))
+    }
+
     /** Incremental grid: renders the first pageSize cards and grows on demand —
      *  the market collection alone holds 6k+ skills and must not mount at once.
      *  Key the element by the active filter so filtering resets the window. */
@@ -1159,8 +1313,15 @@ window.__ModuleLoader__.load({
 
     // ── Views ────────────────────────────────────────────────────────────────
 
-    function CardsView({ executors, t, onEnter, onBrowseAll }) {
-      if (!executors.length) return h(Empty, null, t('noExecutors'))
+    function CardsView({ executors, t, onEnter, onBrowseAll, onOpenSettings }) {
+      if (!executors.length) return [
+        // 空列表也要留设置入口：全部执行器被停用/目录为空时仍能进管理弹窗
+        h('div', { className: 'sk-toolbar' },
+          h('span', { className: 'sk-hint' }, t('cardsHint')),
+          h('span', { className: 'spacer' }),
+          h(ButtonLite, { onClick: onOpenSettings }, t('executorSettings'))),
+        h(Empty, null, t('noExecutors')),
+      ]
       const present = executors.filter(r => r.dirExists)
       const missing = executors.filter(r => !r.dirExists)
       return [
@@ -1168,6 +1329,8 @@ window.__ModuleLoader__.load({
           h('span', { className: 'sk-hint' }, t('cardsHint')),
           h('span', { className: 'spacer' }),
           h(P.Button, { variant: 'primary', size: 'sm', onClick: onBrowseAll }, `${t('browseAll')} (${executors.reduce((a, r) => a + r.skillCount, 0)})`),
+          h('span', { style: { width: 6 } }),
+          h(ButtonLite, { onClick: onOpenSettings, title: t('executorSettings') }, t('executorSettings')),
           h('span', { style: { width: 6 } }),
           h('span', { className: 'sk-refresh-slot' })),
         h('div', { className: 'sk-src' },
@@ -1257,6 +1420,7 @@ window.__ModuleLoader__.load({
       const [filterExecutor, setFilterExecutor] = useState('all')
       const [sourceFilter, setSourceFilter] = useState('all')
       const [marketSettingsOpen, setMarketSettingsOpen] = useState(false)
+      const [executorSettingsOpen, setExecutorSettingsOpen] = useState(false)
       const [shareParams, setShareParams] = useState(null)
       const [marketToast, setMarketToast] = useState(null)
       const [marketView, setMarketView] = useState('cards')
@@ -1388,7 +1552,8 @@ window.__ModuleLoader__.load({
         } else {
           body = h(CardsView, { executors, t,
             onEnter: key => { setFilterExecutor(key); setSearchDrill('') },
-            onBrowseAll: () => setExecutorView('all') })
+            onBrowseAll: () => setExecutorView('all'),
+            onOpenSettings: () => setExecutorSettingsOpen(true) })
         }
       } else {
         // Market tab mirrors the executors tab: source cards by default, a flat
@@ -1485,6 +1650,12 @@ window.__ModuleLoader__.load({
           onClose: () => setMarketSettingsOpen(false),
           onToast: (text) => { setMarketToast(text); setTimeout(() => setMarketToast(null), 3000) },
           onSynced: () => { setBaseStale(true) },
+        }),
+        executorSettingsOpen && h(ExecutorSettingsDialog, {
+          t,
+          onClose: () => setExecutorSettingsOpen(false),
+          onToast: (text) => { setMarketToast(text); setTimeout(() => setMarketToast(null), 3000) },
+          onChanged: () => reloadExecutors(),
         }),
         marketToast && h(InToast, { text: marketToast }),
         pendingInstall && h(SkDialog, {
