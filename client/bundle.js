@@ -1194,8 +1194,12 @@ window.__ModuleLoader__.load({
       const [rows, setRows] = useState(null)
       const [busy, setBusy] = useState(false)
       const [restoreArmed, setRestoreArmed] = useState(false)
+      // 行的 React key 必须稳定：不能用 r.key——它是可编辑字段，逐字输入会整行
+      // 重挂载、输入框丢焦点（每个字符后）。__id 在行创建/载入时分配。
+      const rowSeq = useRef(0)
+      const withIds = (list) => (Array.isArray(list) ? list : []).map((r) => ({ ...r, __id: 'r' + (++rowSeq.current) }))
 
-      const applySheet = (d) => setRows(Array.isArray(d && d.executors) ? d.executors : [])
+      const applySheet = (d) => setRows(withIds(d && d.executors))
       const refresh = () => getJson(API + '/executor-settings')
         .then(applySheet)
         .catch(e => onToast(t('operationFailed') + ': ' + e.message))
@@ -1204,7 +1208,7 @@ window.__ModuleLoader__.load({
       const KEBAB = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
       const patchRow = (index, patch) => setRows(rs => rs.map((r, i) => i === index ? { ...r, ...patch } : r))
       const removeRow = (index) => setRows(rs => rs.filter((_, i) => i !== index))
-      const addRow = () => setRows(rs => [...rs, { key: '', label: '', dir: '', source: 'custom', locked: false, managedByConfig: false, disabled: false, overridden: false, defaultDir: '' }])
+      const addRow = () => setRows(rs => [...rs, { __id: 'r' + (++rowSeq.current), key: '', label: '', dir: '', source: 'custom', locked: false, managedByConfig: false, disabled: false, overridden: false, defaultDir: '' }])
 
       const validate = () => {
         const customs = rows.filter(r => r.source === 'custom' && !r.managedByConfig)
@@ -1257,7 +1261,7 @@ window.__ModuleLoader__.load({
       const tag = (text, tone) => h('span', { className: 'sk-tag' + (tone ? ' ' + tone : '') }, text)
       const rowEl = (r, i) => {
         const editable = !r.locked && !r.managedByConfig
-        return h('div', { key: (r.key || 'new') + i, style: { display: 'flex', flexDirection: 'column', gap: 6,
+        return h('div', { key: r.__id, style: { display: 'flex', flexDirection: 'column', gap: 6,
             padding: '8px 10px', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 10, opacity: r.disabled ? 0.55 : 1 } },
           h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
             h('span', { className: 'sk-tag' }, r.source === 'builtin' ? t('execSourceBuiltin') : t('execSourceCustom')),
