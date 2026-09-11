@@ -146,7 +146,7 @@ test('apply registers a provider listing installed over market', async () => {
       effect: (fn) => (typeof fn === 'function' ? fn() : undefined),
       logger: { warn: () => {} },
     }
-    plugin.apply(ctx, { marketDirs: [join(root, 'market')], installedDir: join(root, 'installed') })
+    plugin.apply(ctx, { marketDirs: [join(root, 'market')], installedDir: join(root, 'installed'), marketSync: { publishMarket: true } })
     assert.equal(calls.length, 1)
     assert.equal(registered.name, 'ntd-skills')
 
@@ -170,6 +170,18 @@ test('apply registers a provider listing installed over market', async () => {
     assert.equal(byName['canvas-design'].invocation.modelInvocable, false)
     assert.equal(byName['doc-coauthoring'].invocation.modelInvocable, true) // 已安装的照旧
 
+    // 默认 publishMarket: false —— 市场货架不进宿主 `/` 注册表
+    let registeredQuiet
+    plugin.apply({
+      skills: { registerProvider: (create) => { registeredQuiet = create({ signal: new AbortController().signal, invalidate: () => {} }) } },
+      webServer: { register: () => () => {} },
+      effect: (fn) => (typeof fn === 'function' ? fn() : undefined),
+      logger: { warn: () => {} },
+    }, { marketDirs: [join(root, 'market')], installedDir: join(root, 'installed') })
+    const quiet = await registeredQuiet.list()
+    assert.deepEqual(quiet.map((c) => c.name), ['doc-coauthoring'])
+    assert.equal(quiet.every((c) => c.source === 'user-installed'), true)
+
     // config 逃生舱：marketModelInvocable: true 恢复旧行为
     let registered2
     plugin.apply({
@@ -177,7 +189,7 @@ test('apply registers a provider listing installed over market', async () => {
       webServer: { register: () => () => {} },
       effect: (fn) => (typeof fn === 'function' ? fn() : undefined),
       logger: { warn: () => {} },
-    }, { marketDirs: [join(root, 'market')], installedDir: join(root, 'installed'), marketModelInvocable: true })
+    }, { marketDirs: [join(root, 'market')], installedDir: join(root, 'installed'), marketModelInvocable: true, marketSync: { publishMarket: true } })
     const candidates2 = await registered2.list()
     const byName2 = Object.fromEntries(candidates2.map((candidate) => [candidate.name, candidate]))
     assert.equal(byName2['canvas-design'].invocation.modelInvocable, true)
@@ -201,7 +213,7 @@ test('disable-model-invocation frontmatter drops model invocability only', async
       effect: (fn) => (typeof fn === 'function' ? fn() : undefined),
       logger: { warn: () => {} },
     }
-    plugin.apply(ctx, { marketDirs: [join(root, 'market')], installedDir: join(root, 'installed') })
+    plugin.apply(ctx, { marketDirs: [join(root, 'market')], installedDir: join(root, 'installed'), marketSync: { publishMarket: true } })
     const [candidate] = await registered.list()
     assert.equal(candidate.invocation.modelInvocable, false)
     assert.equal(candidate.invocation.userInvocable, false)
@@ -229,7 +241,7 @@ test('scan skips .git and node_modules, resolves through nesting', async () => {
       effect: (fn) => (typeof fn === 'function' ? fn() : undefined),
       logger: { warn: () => {} },
     }
-    plugin.apply(ctx, { marketDirs: [join(root, 'market')], installedDir: join(root, 'installed') })
+    plugin.apply(ctx, { marketDirs: [join(root, 'market')], installedDir: join(root, 'installed'), marketSync: { publishMarket: true } })
     const candidates = await registered.list()
     assert.equal(candidates.length, 1)
     assert.equal(candidates[0].name, 'demo')
