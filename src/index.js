@@ -486,6 +486,9 @@ const DEFAULT_MARKET_SYNC = {
   gitBinary: 'git',
   autoSync: true,        // periodic: sync when lastSyncAt is older than a day
   syncOnStartup: true,
+  // 市场货架默认只进设置页浏览/安装，不进宿主 `/` 技能注册表——数千条
+  // 「仅用户」候选会把 slash 菜单刷爆。false = 只保留已安装技能。
+  publishMarket: false,
 }
 
 /** User-settings namespace persisted through the host ctx.settings service
@@ -503,6 +506,7 @@ function marketSettingsSchema() {
     repoDir: Schema.string(),
     autoSync: Schema.boolean(),
     syncOnStartup: Schema.boolean(),
+    publishMarket: Schema.boolean(),
     token: Schema.string(),
   })
 }
@@ -812,7 +816,7 @@ module.exports = {
     const baseSettings = () => {
       const cfg = (config.marketSync && typeof config.marketSync === 'object') ? config.marketSync : {}
       const base = { ...DEFAULT_MARKET_SYNC }
-      for (const key of ['url', 'branch', 'gitBinary', 'autoSync', 'syncOnStartup']) {
+      for (const key of ['url', 'branch', 'gitBinary', 'autoSync', 'syncOnStartup', 'publishMarket']) {
         if (cfg[key] !== undefined) base[key] = cfg[key]
       }
       if (config.marketRepoDir !== undefined) base.repoDir = resolve(expandTilde(config.marketRepoDir))
@@ -936,15 +940,19 @@ module.exports = {
             }
             candidates.push(toCandidate(row, 'user-installed', RANK_INSTALLED))
           }
-          for (const row of market) {
-            const why = isValid(row)
-            if (why !== undefined) {
-              ctx.logger.warn(`skills-management: skipping market skill '${row.entry.relPath}': ${why}`)
-              continue
+          // 市场货架默认不进宿主注册表（publishMarket: false）：数千条候选会把
+          // `/` 菜单刷爆，且它们本就不该进模型目录。设置页浏览/安装不受影响。
+          if (marketSettings().publishMarket !== false) {
+            for (const row of market) {
+              const why = isValid(row)
+              if (why !== undefined) {
+                ctx.logger.warn(`skills-management: skipping market skill '${row.entry.relPath}': ${why}`)
+                continue
+              }
+              const shortName = row.name.includes('/') ? row.name.split('/').pop() : row.name
+              if (installed.some((e) => e.name === shortName)) continue
+              candidates.push(toCandidate(row, 'market', RANK_MARKET, { modelInvocable: marketModelInvocable }))
             }
-            const shortName = row.name.includes('/') ? row.name.split('/').pop() : row.name
-            if (installed.some((e) => e.name === shortName)) continue
-            candidates.push(toCandidate(row, 'market', RANK_MARKET, { modelInvocable: marketModelInvocable }))
           }
           return candidates
         },
@@ -995,6 +1003,7 @@ module.exports = {
               needsUpdate: localCommit !== undefined && remoteCommit !== undefined ? localCommit !== remoteCommit : undefined,
               lastSyncAt: marketState.lastSyncAt, lastResult: marketState.lastResult,
               autoSync: eff.autoSync, syncOnStartup: eff.syncOnStartup,
+              publishMarket: eff.publishMarket !== false,
               hasToken: typeof eff.token === 'string' && eff.token !== '',
               syncing: marketSyncRun !== null,
               sparsePaths: marketSparsePaths() ?? null,
@@ -1012,7 +1021,7 @@ module.exports = {
             return
           }
 
-          // PUT /skills-management/api/market/settings {url?, branch?, autoSync?, syncOnStartup?}
+          // PUT /skills-management/api/market/settings {url?, branch?, autoSync?, syncOnStartup?, publishMarket?}
           if (req.method === 'PUT' && apiPath.endsWith('/skills-management/api/market/settings')) {
             // body first: readJsonBody attaches listeners synchronously, so no
             // event can slip past while the state-file promise resolves
@@ -1028,7 +1037,7 @@ module.exports = {
             if (typeof body.repoDir === 'string' && body.repoDir !== '') {
               patch.repoDir = resolve(expandTilde(body.repoDir))
             }
-            for (const key of ['autoSync', 'syncOnStartup']) {
+            for (const key of ['autoSync', 'syncOnStartup', 'publishMarket']) {
               if (typeof body[key] === 'boolean') patch[key] = body[key]
             }
             if (settingsScope && typeof settingsScope.update === 'function') {
@@ -1036,6 +1045,9 @@ module.exports = {
             } else {
               Object.assign(settingsOverrides, patch)
             }
+            // publishMarket 直接决定 provider.list() 的候选集合，改完立刻让
+            // `/` 菜单重读注册表，不必等 skills/change 或重启。
+            if ('publishMarket' in patch) invalidate()
             const eff = marketSettings()
             const { token, ...safe } = eff  // token 只写不回读
             sendJson(res, 200, { settings: safe, hasToken: typeof token === 'string' && token !== '', settingsFile: join(dshHome(), 'settings.yaml') })

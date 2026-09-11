@@ -126,7 +126,7 @@ window.__ModuleLoader__.load({
      * light/dark follows the shell; all copy comes from the locale registry
      * (`zh`/`en`) so switches render live. No hardcoded colors, no ad-hoc copy.
      */
-
+    
     // React is a loader platform module. Under plain Node (contract tests) a
     // minimal createElement/hook shim keeps the source loadable for assertions.
     let __React = null
@@ -141,7 +141,7 @@ window.__ModuleLoader__.load({
       }
     }
     const { createElement: h, useState, useEffect, useMemo, useRef } = __React
-
+    
     // Platform module — always present in the loader's seeded require table.
     // Under plain Node (tests) it is absent; a tagged-element shim keeps the
     // tree structurally testable while every real surface ships primitives.
@@ -149,13 +149,13 @@ window.__ModuleLoader__.load({
     try { P = require('@deepseek-ai/dsh-client-ui-primitives') } catch {}
     let RDP = null
     try { RDP = require('react-dom') } catch {}
-
+    
     // NOTE: no class components in this module. A `class X extends
     // React.Component` error boundary defined here silently killed rendering in
     // the plugin loader (components before it rendered, it never instantiated,
     // zero errors) — render-time crashes are handled by the try/catch inside
     // SkillsPage and recorded into globalThis.__skErrors instead.
-
+    
     /** Idempotent stylesheet injection — the overlay/tab/card classes are
      *  position-critical (.sk-overlay is position:fixed) so mounting without
      *  them renders the panel invisibly at the end of <body>. */
@@ -167,7 +167,7 @@ window.__ModuleLoader__.load({
       holder.innerHTML = STYLE
       document.head.appendChild(holder)
     }
-
+    
     const prim = (name) => P && P[name]
       ? P[name]
       : function Shim(props) {
@@ -176,23 +176,27 @@ window.__ModuleLoader__.load({
           const el = document.createElement(tag === 'function' || typeof props.as === 'string' ? props.as : tag)
           return h(tag, { ...rest, 'data-p-shim': name }, children)
         }
-
+    
     // Sessions service (client runtime): opens the run's conversation in the
     // real UI. Resolved through dynamic ctx.inject (ui-commands precedent);
     // absence degrades the 打开对话 button to hidden.
     let sessionsApi = null
     const sessionsSvc = () => sessionsApi
-
+    
     // Composer services (inputTriggers + sessions) for the ＋ 技能 button plus
-    // the `connection` service for the picker's skill catalog: the button opens
+    // the skills catalog face for the picker: the button opens
     // the plugin's own searchable picker popover (the host slash menu filters
     // only by a typed query, which a button click cannot provide); the pick is
     // written into the draft through the same scoped `slash/input-insert-text`
     // event the host menu executes. Absence hides the button; nothing else
     // depends on it.
+    // dsh 0.1.5+ moved the data plane off `connection.api` onto `ctx.remote.*`
+    // (subpath inject `remote.skills`); older cores still expose
+    // `connection.api.skills`. Prefer remote when present.
     let composerScope = null
+    let remoteSkillsApi = null
     let connectionApi = null
-
+    
     /**
      * Open one registered '/' source over a synthetic collapsed span appended at
      * the draft end (host toggleCommandMenu 同款调用形状；标准 kit 不暴露光标，
@@ -222,7 +226,7 @@ window.__ModuleLoader__.load({
       })
       return true
     }
-
+    
     /**
      * Insert `text` at the end of the session draft through the same scoped
      * event the host slash menu executes (`slash/input-insert-text`). The span
@@ -246,7 +250,7 @@ window.__ModuleLoader__.load({
         }) === true
       } catch { return false }
     }
-
+    
     /** Best-effort refocus of the composer textarea after the picker closes. */
     function refocusComposer() {
       try {
@@ -255,34 +259,49 @@ window.__ModuleLoader__.load({
         if (ta && typeof ta.focus === 'function') ta.focus()
       } catch {}
     }
-
+    
     /** Picker popover list cap — beyond this the search input is the filter. */
     const PICKER_ROW_CAP = 200
-
-    /** Skill catalog cache for the picker (ui-skill 同源：connection.api.skills). */
+    
+    /** Skill catalog cache for the picker (ui-skill 同源：remote.skills / connection.api.skills). */
     let skillCatalog = { sessionId: null, at: 0, rows: null }
     const SKILL_CATALOG_TTL = 60_000
-
+    
     /**
      * Picker candidates from the host skill registry (the same list the `/`
      * skill source shows). Subagent sessions have no catalog (ui-skill 同款守卫);
-     * a failed/absent connection rejects → the picker shows its empty state.
+     * a failed/absent catalog source rejects → the picker shows its empty state.
+     *
+     * `catalog` is `{ remoteSkills?, connection? }` from live inject, or a bare
+     * legacy `connection` object (pre-0.1.5 tests / callers).
+     * dsh 0.1.5+ (`remote.skills.list`): unwrapped `{ ok, value: { skills } }`.
+     * Older cores (`connection.api.skills.list`): nested `{ result: { ok, value } }`.
      */
-    async function fetchSkillCandidates(connection, sessions, sessionId) {
+    async function fetchSkillCandidates(catalog, sessions, sessionId) {
       try { if (sessions && typeof sessions.subagentAddress === 'function' && sessions.subagentAddress(sessionId) !== undefined) return [] } catch {}
       const now = Date.now()
       if (skillCatalog.rows !== null && skillCatalog.sessionId === sessionId && now - skillCatalog.at < SKILL_CATALOG_TTL) return skillCatalog.rows
-      const skills = connection && connection.api && connection.api.skills
-      if (!skills || typeof skills.list !== 'function') throw new Error('connection.api.skills unavailable')
-      const res = await skills.list({ sessionId })
-      const result = res && res.result
-      if (!result || result.ok !== true) throw new Error('skill.list failed')
-      const list = result.value && Array.isArray(result.value.skills) ? result.value.skills : []
+      const bareLegacy = !!(catalog && typeof catalog === 'object' && !('remoteSkills' in catalog) && !('connection' in catalog))
+      const remoteSkills = bareLegacy ? null : (catalog && catalog.remoteSkills)
+      const connection = bareLegacy ? catalog : (catalog && catalog.connection)
+      let list
+      if (remoteSkills && typeof remoteSkills.list === 'function') {
+        const res = await remoteSkills.list({ sessionId })
+        if (!res || res.ok !== true) throw new Error('remote.skills.list failed')
+        list = res.value && Array.isArray(res.value.skills) ? res.value.skills : []
+      } else {
+        const skills = connection && connection.api && connection.api.skills
+        if (!skills || typeof skills.list !== 'function') throw new Error('skills list API unavailable')
+        const res = await skills.list({ sessionId })
+        const result = res && res.result
+        if (!result || result.ok !== true) throw new Error('skill.list failed')
+        list = result.value && Array.isArray(result.value.skills) ? result.value.skills : []
+      }
       const rows = list.map((s) => ({ name: s.name, description: s.description || '', modelInvocable: s.modelInvocable !== false }))
       skillCatalog = { sessionId, at: now, rows }
       return rows
     }
-
+    
     /**
      * ＋ 技能 picker：锚定在按钮上方、自带搜索框的候选浮层（portal 到 body）。
      * 宿主斜杠菜单靠「输入的 query」过滤，按钮打开的菜单没有输入载体——候选
@@ -343,11 +362,11 @@ window.__ModuleLoader__.load({
                     h('span', { className: 'sk-picker-desc' },
                       row.modelInvocable ? row.description : `${t('pickerUserOnly')} · ${row.description}`))))))
     }
-
+    
     // ── Locale ───────────────────────────────────────────────────────────────
-
+    
     const NS = 'skillsManagement'
-
+    
     const ZH = {
       title: '技能市场',
       close: '关闭',
@@ -392,6 +411,8 @@ window.__ModuleLoader__.load({
       needsUpdateTag: '有更新',
       autoSyncLabel: '每天自动同步',
       syncOnStartupLabel: '启动时同步',
+      publishMarketLabel: '市场技能进 / 菜单',
+      publishMarketHint: '关掉后 / 菜单只剩已安装技能；市场页浏览/安装不受影响',
       save: '保存',
       saved: '设置已保存',
       gitMissing: '未检测到 git',
@@ -489,7 +510,7 @@ window.__ModuleLoader__.load({
       sortTokensAsc: 'token 低→高',
       sortCharsDesc: '字符 多→少',
     }
-
+    
     const EN = {
       title: 'Skills Market',
       close: 'Close',
@@ -534,6 +555,8 @@ window.__ModuleLoader__.load({
       needsUpdateTag: 'Updates available',
       autoSyncLabel: 'Auto sync daily',
       syncOnStartupLabel: 'Sync on startup',
+      publishMarketLabel: 'Market skills in / menu',
+      publishMarketHint: 'When off, / only lists installed skills; market browse/install still works',
       save: 'Save',
       saved: 'Settings saved',
       gitMissing: 'git not found',
@@ -631,9 +654,9 @@ window.__ModuleLoader__.load({
       sortTokensAsc: 'tokens low→high',
       sortCharsDesc: 'chars high→low',
     }
-
+    
     // ── Pure helpers ────────────────────────────────────────────────────────
-
+    
     /** ntd ActionButton 同款 {{key}} 替换:split/join 规避正则元字符 */
     const SHARE_PROMPT_ZH = [
       '请把本地技能「{{skillName}}」{{version}}打包提交到 GitCode 官方仓库，作为一个 PR 供维护者审核。',
@@ -659,16 +682,16 @@ window.__ModuleLoader__.load({
       '- 如果任一步骤失败，先检查错误信息，不要盲目重试；若 token 失效，提示用户到技能市场的 ⚙ 设置面板重新填写。',
       '- 全程与最终汇报都使用中文。',
     ].join('\n')
-
+    
     const API = '/skills-management/api'
-
+    
     function formatSize(bytes) {
       if (!Number.isFinite(bytes) || bytes < 0) return '-'
       if (bytes < 1024) return bytes + ' B'
       if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
       return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
     }
-
+    
     function formatTime(iso) {
       if (!iso) return '-'
       try {
@@ -682,23 +705,23 @@ window.__ModuleLoader__.load({
         return 'now'
       } catch { return '-' }
     }
-
+    
     function gradient(name) {
       let hash = 0
       for (let i = 0; i < name.length; i++) hash = ((hash << 5) - hash + name.charCodeAt(i)) | 0
       const h1 = Math.abs(hash) % 360
       return `linear-gradient(135deg, hsl(${h1},55%,55%), hsl(${(h1 + 40) % 360},45%,45%))`
     }
-
+    
     const shortName = (name) => name.includes('/') ? name.split('/').slice(1).join('/') : name
-
+    
     /** Shared predicate for skill filtering (name / description / keywords). */
     function matchSkill(s, lower) {
       return (s.name || '').toLowerCase().includes(lower) ||
         (s.description || '').toLowerCase().includes(lower) ||
         (s.keywords || []).some(k => String(k).toLowerCase().includes(lower))
     }
-
+    
     /** 注入开销一行文案：token 在（宿主装了词表）→「≈N token · M 字符」，
      *  降级时只剩字符数；两者都缺（旧响应）→ null 不渲染。 */
     function usageText(s, t) {
@@ -706,7 +729,7 @@ window.__ModuleLoader__.load({
       if (typeof s.chars === 'number') return t('usageCharsOnly', { chars: s.chars })
       return null
     }
-
+    
     /** 卡片排序：缺 token/chars 的行（预热未完成或降级模式）永远沉底，
      *  其余按所选指标升/降序。keyFn 供 {row, s} 包装数组取卡片行。 */
     function sortSkills(rows, sortBy, keyFn = (s) => s) {
@@ -721,7 +744,7 @@ window.__ModuleLoader__.load({
         return asc ? va - vb : vb - va
       })
     }
-
+    
     /** 排序下拉（原生 select：排序是低频操作，不值得自绘 popover）。 */
     function SortSelect({ value, onChange, t }) {
       return h('select', { value, onChange: e => onChange(e.target.value), style: selectStyle(), title: t('sortLabel'), 'aria-label': t('sortLabel') },
@@ -730,9 +753,9 @@ window.__ModuleLoader__.load({
         h('option', { value: 'tokensAsc' }, t('sortTokensAsc')),
         h('option', { value: 'chars' }, t('sortCharsDesc')))
     }
-
+    
     // ── Token-based stylesheet (light/dark adaptive by construction) ────────
-
+    
     const STYLE = `<style>
     .sk-page{position:relative;display:flex;flex-direction:column;gap:14px;color:var(--dsw-alias-label-primary);font-family:var(--dsw-font-family);font-size:var(--dsw-font-sm-14,14px)}
     .sk-overlay{position:fixed;inset:0;z-index:2147483000;background:var(--dsw-alias-bg-base);overflow:auto;padding:20px 26px}
@@ -809,34 +832,34 @@ window.__ModuleLoader__.load({
     .sk-picker-desc{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-tertiary);font-size:12px}
     .sk-picker-empty{padding:12px 10px;text-align:center;color:var(--dsw-alias-label-dimmed);font-size:13px}
     </style>`
-
+    
     // ── Fetch layer ─────────────────────────────────────────────────────────
-
+    
     async function getJson(url) {
       const r = await fetch(url)
       if (!r.ok) throw new Error('HTTP ' + r.status)
       return r.json()
     }
-
+    
     // ── Small building blocks ────────────────────────────────────────────────
-
+    
     const Tag = ({ tone, children }) =>
       h('span', { className: 'sk-tag' + (tone ? ' ' + tone : '') }, children)
-
+    
     const Spinner = ({ label }) =>
       h('div', { className: 'sk-loading' },
         h('div', { className: 'sk-spin' }),
         h('div', null, label))
-
+    
     const Empty = ({ children }) => h('div', { className: 'sk-empty' }, children)
-
+    
     function Avatar({ name, square, size }) {
       const sizing = size ? { width: size, height: size, fontSize: Math.round(size * 0.42) } : {}
       return h('div', { className: 'sk-avatar' + (square ? ' sq' : ''),
           style: { background: gradient(name), ...sizing } },
         (name[0] || '?').toUpperCase())
     }
-
+    
     /** Executor dropdown: self-contained popover (host primitives expose no Menu). */
     function SourceFilter({ rows, value, onChange, t }) {
       const [open, setOpen] = useState(false)
@@ -862,9 +885,9 @@ window.__ModuleLoader__.load({
             onKeyDown: e => { if (e.key === 'Enter' || e.key === ' ') { onChange(item.id); setOpen(false) } },
           }, item.label))))
     }
-
+    
     // ── Skill / executor cards ───────────────────────────────────────────────
-
+    
     function SkillCard({ row, s, t, onOpen, onInstall, onDelete, onShare, onToggleVisible }) {
       const name = shortName(s.name)
       const usage = usageText(s, t)
@@ -896,7 +919,7 @@ window.__ModuleLoader__.load({
             onShare && h(ButtonLite, { small: true, title: t('shareBtn'),
               onClick: e => { e.stopPropagation(); onShare(row, s) } }, t('shareBtn')))))
     }
-
+    
     /** Tiny variant buttons before P.Button availability resolution settles —
      *  unified through primitives in the browser via data-p-* swap below. */
     function ButtonLite({ primary, danger, small, children, ...rest }) {
@@ -914,7 +937,7 @@ window.__ModuleLoader__.load({
         ...rest,
       }, children)
     }
-
+    
     function ExecutorCard({ row, t, onEnter }) {
       const count = Array.isArray(row.skills) ? row.skills.length : (row.skillCount || 0)
       const sizeTotal = Array.isArray(row.skills) ? row.skills.reduce((a, s) => a + (s.totalSize || 0), 0) : null
@@ -933,9 +956,9 @@ window.__ModuleLoader__.load({
             : t('dirNotPresent')),
         h('div', { className: 'sk-dir' }, row.dir))
     }
-
+    
     // ── Detail modal ─────────────────────────────────────────────────────────
-
+    
     function DetailModal({ sel, executors, t, onClose, onInstalled, onDeleted }) {
       const [data, setData] = useState(null)
       const [file, setFile] = useState(null)
@@ -944,7 +967,7 @@ window.__ModuleLoader__.load({
       const [toast, setToast] = useState(false)
       const meta = data?.meta || {}
       const row = sel.executorKey ? executors.find(x => x.key === sel.executorKey) : null
-
+    
       useEffect(() => {
         let alive = true
         setData(null)
@@ -952,13 +975,13 @@ window.__ModuleLoader__.load({
         getJson(API + '/detail' + q).then(d => { if (alive) setData(d) }).catch(() => {})
         return () => { alive = false }
       }, [sel])
-
+    
       const openFile = (f) => {
         setFile(f)
         const q = `?name=${encodeURIComponent(sel.name)}&path=${encodeURIComponent(f.path)}${sel.executorKey ? '&executor=' + encodeURIComponent(sel.executorKey) : ''}`
         fetch(API + '/file' + q).then(r => { if (!r.ok) throw 0; return r.text() }).then(setFileText).catch(() => setFileText(''))
       }
-
+    
       const doDelete = async () => {
         try {
           const body = { name: sel.name }
@@ -969,7 +992,7 @@ window.__ModuleLoader__.load({
           onDeleted()
         } catch (e) { setConfirming(false); alert(t('operationFailed') + ': ' + e.message) }
       }
-
+    
       const doInstall = async () => {
         try {
           const body = { name: sel.name }
@@ -979,14 +1002,14 @@ window.__ModuleLoader__.load({
           onInstalled()
         } catch (e) { alert(t('operationFailed') + ': ' + e.message) }
       }
-
+    
       const copyContent = () => {
         navigator.clipboard.writeText(data?.content || '').then(() => {
           setToast(true)
           setTimeout(() => setToast(false), 2200)
         }).catch(() => {})
       }
-
+    
       // 治理键开关（dsh 原生 disable-model-invocation）：对用户库（dsh 行）和
       // user-agents 根（agents 行——dsh 内置扫描 ~/.agents/skills）的技能开放
       const [invBusy, setInvBusy] = useState(false)
@@ -1000,10 +1023,10 @@ window.__ModuleLoader__.load({
           getJson(API + '/detail' + q).then(d => { setData(d) }).catch(() => {})
         } catch (e) { alert(t('operationFailed') + ': ' + e.message) } finally { setInvBusy(false) }
       }
-
+    
       const files = data?.files || []
       const isMd = file ? file.path.endsWith('.md') : true
-
+    
       return h('div', null,
         h(SkDialog, { title: shortName(sel.name), onClose, wide: true },
               h('div', { className: 'sk-page' },
@@ -1050,7 +1073,7 @@ window.__ModuleLoader__.load({
         }, h('div', { className: 'sk-hint' }, t('deleteConfirm', { name: sel.name, where: row ? row.label : t('whereDsh') }))),
         toast && h(InToast, { text: t('copied') }))
     }
-
+    
     /** In-page dialog: rendered INSIDE the fullscreen overlay's stacking context
      *  so it can never fall behind it (host Modal portals to <body> with a lower
      *  z-index than the fullscreen page and would be invisible). */
@@ -1062,17 +1085,17 @@ window.__ModuleLoader__.load({
           children,
           footer && h('div', { className: 'sk-dlg-foot' }, footer)))
     }
-
+    
     function InToast({ text }) {
       return h('div', { className: 'sk-toast' }, text)
     }
-
+    
     let _actionShareDialog = null
     function getActionShareDialog() {
       if (_actionShareDialog === null) _actionShareDialog = PluginKit.makeActionShareDialog(__React)
       return _actionShareDialog
     }
-
+    
     /** 分享抽屉：壳交给 PluginKit（ActionShareDialog），本插件只负责
      *  hasToken 提示、settingsFile 插值与 run/poll 的 API 映射。 */
     function ShareSkillDialog({ t, params, onClose }) {
@@ -1093,7 +1116,7 @@ window.__ModuleLoader__.load({
         onClose,
       })
     }
-
+    
     /** Market sync settings: status card, sync action, editable url/branch. */
     function MarketSettingsDialog({ t, onClose, onToast, onSynced }) {
       const [status, setStatus] = useState(null)
@@ -1104,7 +1127,8 @@ window.__ModuleLoader__.load({
       const [repoDir, setRepoDir] = useState('')
       const [autoSync, setAutoSync] = useState(true)
       const [syncOnStartup, setSyncOnStartup] = useState(true)
-
+      const [publishMarket, setPublishMarket] = useState(false)
+    
       const refresh = () => getJson(API + '/market/status').then(d => {
         setStatus(d)
         setUrl(d.url)
@@ -1112,9 +1136,10 @@ window.__ModuleLoader__.load({
         setRepoDir(d.dir)
         setAutoSync(d.autoSync)
         setSyncOnStartup(d.syncOnStartup)
+        setPublishMarket(!!d.publishMarket)
       }).catch(() => {})
       useEffect(() => { refresh() }, [])
-
+    
       const doSync = async () => {
         setBusy(true)
         try {
@@ -1133,7 +1158,7 @@ window.__ModuleLoader__.load({
       }
       const doSave = async () => {
         try {
-          const patch = { url, branch, autoSync, syncOnStartup }
+          const patch = { url, branch, autoSync, syncOnStartup, publishMarket }
           if (repoDir !== '' && repoDir !== (status && status.dir)) patch.repoDir = repoDir
           if (token !== '') patch.token = token
           await putSettings(patch)
@@ -1149,11 +1174,11 @@ window.__ModuleLoader__.load({
           refresh()
         } catch (e) { onToast(t('operationFailed') + ': ' + e.message) }
       }
-
+    
       const short = (c) => (c ? String(c).slice(0, 8) : '-')
       const row = (label, value) => h('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 12, padding: '3px 0' } },
         h('span', { className: 'sk-dir' }, label), h('span', { className: 'sk-hint', style: { wordBreak: 'break-all', textAlign: 'right' } }, value))
-
+    
       return h(SkDialog, { title: t('marketSettings'), onClose },
         h('div', { style: { minWidth: 380, display: 'flex', flexDirection: 'column', gap: 10 } },
           status === null
@@ -1173,7 +1198,10 @@ window.__ModuleLoader__.load({
                 h('label', { style: { display: 'flex', alignItems: 'center', gap: 8, color: 'var(--dsw-alias-label-secondary)', fontSize: 13 } },
                   h('input', { type: 'checkbox', checked: autoSync, onChange: e => setAutoSync(e.target.checked) }), t('autoSyncLabel')),
                 h('label', { style: { display: 'flex', alignItems: 'center', gap: 8, color: 'var(--dsw-alias-label-secondary)', fontSize: 13 } },
-                  h('input', { type: 'checkbox', checked: syncOnStartup, onChange: e => setSyncOnStartup(e.target.checked) }), t('syncOnStartupLabel'))),
+                  h('input', { type: 'checkbox', checked: syncOnStartup, onChange: e => setSyncOnStartup(e.target.checked) }), t('syncOnStartupLabel')),
+                h('label', { style: { display: 'flex', alignItems: 'center', gap: 8, color: 'var(--dsw-alias-label-secondary)', fontSize: 13 } },
+                  h('input', { type: 'checkbox', checked: publishMarket, onChange: e => setPublishMarket(e.target.checked) }), t('publishMarketLabel')),
+                h('div', { className: 'sk-hint', style: { fontSize: 12 } }, t('publishMarketHint'))),
               h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
                 h('input', { className: 'sk-input', value: url, onChange: e => setUrl(e.target.value), placeholder: t('repoUrlLabel'), style: { width: '100%' } }),
                 h('input', { className: 'sk-input', value: branch, onChange: e => setBranch(e.target.value), placeholder: t('branchLabel'), style: { width: '100%' } }),
@@ -1186,7 +1214,7 @@ window.__ModuleLoader__.load({
                 h(ButtonLite, { onClick: doSave }, t('save')),
                 h(ButtonLite, { primary: true, onClick: doSync }, busy ? t('syncing') : t('syncNow')))]))
     }
-
+    
     /** 执行器目录管理：内置行可改目录/停用（dsh 锁定；cordis 配置管理的行只展示），
      *  自定义行可增删改。保存 = 整表 PUT executor-settings（replace 语义），服务端
      *  逐行校验（key kebab、重复、dsh 锁定），改完即时生效无需重启。 */
@@ -1198,18 +1226,18 @@ window.__ModuleLoader__.load({
       // 重挂载、输入框丢焦点（每个字符后）。__id 在行创建/载入时分配。
       const rowSeq = useRef(0)
       const withIds = (list) => (Array.isArray(list) ? list : []).map((r) => ({ ...r, __id: 'r' + (++rowSeq.current) }))
-
+    
       const applySheet = (d) => setRows(withIds(d && d.executors))
       const refresh = () => getJson(API + '/executor-settings')
         .then(applySheet)
         .catch(e => onToast(t('operationFailed') + ': ' + e.message))
       useEffect(() => { refresh() }, [])
-
+    
       const KEBAB = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
       const patchRow = (index, patch) => setRows(rs => rs.map((r, i) => i === index ? { ...r, ...patch } : r))
       const removeRow = (index) => setRows(rs => rs.filter((_, i) => i !== index))
       const addRow = () => setRows(rs => [...rs, { __id: 'r' + (++rowSeq.current), key: '', label: '', dir: '', source: 'custom', locked: false, managedByConfig: false, disabled: false, overridden: false, defaultDir: '' }])
-
+    
       const validate = () => {
         const customs = rows.filter(r => r.source === 'custom' && !r.managedByConfig)
         for (const r of customs) {
@@ -1220,7 +1248,7 @@ window.__ModuleLoader__.load({
         if (keys.some((k, i) => keys.indexOf(k) !== i)) return t('execKeyDup')
         return undefined
       }
-
+    
       const saveSheet = async (sheet) => {
         const r = await fetch(API + '/executor-settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sheet) })
         const d = await r.json().catch(() => ({}))
@@ -1257,7 +1285,7 @@ window.__ModuleLoader__.load({
         try { await saveSheet({ dirs: {}, disabled: [], extra: [] }) }
         catch (e) { onToast(t('operationFailed') + ': ' + e.message) } finally { setBusy(false) }
       }
-
+    
       const tag = (text, tone) => h('span', { className: 'sk-tag' + (tone ? ' ' + tone : '') }, text)
       const rowEl = (r, i) => {
         const editable = !r.locked && !r.managedByConfig
@@ -1286,7 +1314,7 @@ window.__ModuleLoader__.load({
             ? h('input', { className: 'sk-input', value: r.dir, placeholder: t('execDirPlaceholder'), style: { width: '100%' }, onChange: e => patchRow(i, { dir: e.target.value }) })
             : h('div', { className: 'sk-dir' }, r.dir))
       }
-
+    
       return h(SkDialog, { title: t('executorSettings'), onClose, wide: true },
         rows === null
           ? h(Spinner, { label: '…' })
@@ -1302,7 +1330,7 @@ window.__ModuleLoader__.load({
                 h(ButtonLite, { primary: true, disabled: busy, onClick: doSave }, t('save'))),
             ]))
     }
-
+    
     /** Incremental grid: renders the first pageSize cards and grows on demand —
      *  the market collection alone holds 6k+ skills and must not mount at once.
      *  Key the element by the active filter so filtering resets the window. */
@@ -1314,9 +1342,9 @@ window.__ModuleLoader__.load({
           h(ButtonLite, { onClick: () => setShown(n => n + grow) }, t('showMore', { n: items.length - shown }))),
       ]
     }
-
+    
     // ── Views ────────────────────────────────────────────────────────────────
-
+    
     function CardsView({ executors, t, onEnter, onBrowseAll, onOpenSettings }) {
       if (!executors.length) return [
         // 空列表也要留设置入口：全部执行器被停用/目录为空时仍能进管理弹窗
@@ -1346,7 +1374,7 @@ window.__ModuleLoader__.load({
         ],
       ]
     }
-
+    
     function AllSkillsView({ executors, searchText, sourceFilter, sortBy, t, onSearch, onFilter, onSort, onBack, onOpen, onInstall, onDelete, onShare, onToggleVisible }) {
       const pending = executors.some(x => x.dirExists && !Array.isArray(x.skills))
       if (pending) return h(Spinner, { label: t('loadingCatalogs') })
@@ -1372,7 +1400,7 @@ window.__ModuleLoader__.load({
           : h('div', { className: 'sk-grid' }, items.map(({ row, s }) =>
               h(SkillCard, { key: row.key + '/' + s.name, row, s, t, onOpen, onInstall, onDelete, onShare, onToggleVisible })))]
     }
-
+    
     function DrillInView({ row, searchText, sortBy, t, onSearch, onSort, onBack, onOpen, onInstall, onDelete, onShare, onToggleVisible }) {
       if (!row) return null
       if (!row.dirExists) {
@@ -1403,7 +1431,7 @@ window.__ModuleLoader__.load({
               render: s => h(SkillCard, { key: s.name, row, s, t, onOpen, onInstall, onDelete, onShare, onToggleVisible }) }),
       ]
     }
-
+    
     function InputBox({ value, placeholder, onSearch }) {
       if (prim('Input')) {
         return h(P.Input, { value, placeholder, className: 'sk-input', onChange: e => onSearch(e.target.value),
@@ -1413,9 +1441,9 @@ window.__ModuleLoader__.load({
         style: { minWidth: 220, minHeight: 32, borderRadius: 8, border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-1)', color: 'var(--dsw-alias-label-primary)', padding: '6px 12px' } })
     }
     function SourceFilterEl(args) { return SourceFilter(args) }
-
+    
     // ── App root ─────────────────────────────────────────────────────────────
-
+    
     function SkillsPage({ t, onClose, embedded }) {
       const [base, setBase] = useState({ sources: [], market: [], installed: [] })
       const [executors, setExecutors] = useState([])
@@ -1438,7 +1466,7 @@ window.__ModuleLoader__.load({
       const [sel, setSel] = useState(null)
       const [tick, forceTick] = useState(0)
       const rootRef = useRef(null)
-
+    
       // Two data planes with very different costs: the executor summary is a
       // fast (~0.2s) count scan, while GET / walks the whole market collection
       // (~2.3s). Load the summary eagerly and the market set lazily — only when
@@ -1457,7 +1485,7 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         if (tab === 'market' && baseStale) reloadBase()
       }, [tab, baseStale])
-
+    
       // Load full lists for one executor on demand
       useEffect(() => {
         if (filterExecutor === 'all') return
@@ -1469,7 +1497,7 @@ window.__ModuleLoader__.load({
           .catch(() => {})
         return () => { alive = false }
       }, [filterExecutor, executors])
-
+    
       // Load all catalogs when entering the flat all-skills view
       useEffect(() => {
         if (!(tab === 'executors' && executorView === 'all')) return
@@ -1480,9 +1508,9 @@ window.__ModuleLoader__.load({
             .catch(() => {})
         })
       }, [tab, executorView, executors])
-
+    
       const row = filterExecutor !== 'all' ? executors.find(x => x.key === filterExecutor) : null
-
+    
       const openDetail = (s, executorKey) => setSel({ name: s.name, executorKey })
       const openShare = (row, s) => {
         const skillName = shortName(s.name)
@@ -1522,7 +1550,7 @@ window.__ModuleLoader__.load({
         reloadExecutors()
         setBaseStale(true)
       }
-
+    
       let body = null
       try {
       if (tab === 'executors') {
@@ -1631,7 +1659,7 @@ window.__ModuleLoader__.load({
         body = h('div', { className: 'sk-empty', style: { color: 'var(--dsw-alias-state-error-primary)' } },
           '\u26A0\uFE0F ' + String((renderErr && renderErr.message) || renderErr))
       }
-
+    
       return h('div', { className: 'sk-page' + (embedded ? '' : ' sk-overlay'), ref: rootRef },
         !embedded && h('div', { className: 'sk-head' },
           h('span', { className: 'sk-title', style: { fontSize: 16 } }, t('title')),
@@ -1684,7 +1712,7 @@ window.__ModuleLoader__.load({
           where: pendingDelete.executor === 'dsh' || !pendingDelete.executor ? t('whereDsh') : ((executors.find(x => x.key === pendingDelete.executor) || {}).label || pendingDelete.executor),
         }))))
       }
-
+    
     function splitSource(source) { return source.split('/')[0] || source }
     /** Market rows carry the full repo path in .name; cards display the short
      *  name but install/detail must POST the full one. */
@@ -1700,7 +1728,7 @@ window.__ModuleLoader__.load({
         color: on ? 'var(--dsw-alias-label-primary)' : 'var(--dsw-alias-label-secondary)',
       }
     }
-
+    
     async function quickDelete(t, executor, name, done) {
       try {
         const body = { name }
@@ -1710,9 +1738,9 @@ window.__ModuleLoader__.load({
         if (typeof done === 'function') done()
       } catch (e) { alert(t('operationFailed') + ': ' + e.message) }
     }
-
+    
     // ── Slot entries ─────────────────────────────────────────────────────────
-
+    
     /** Jump to the run's conversation: open() is best-effort (it may reject
      *  after the selection lands). */
     function openRunSession(sessionId) {
@@ -1722,17 +1750,17 @@ window.__ModuleLoader__.load({
       } catch {}
       return true
     }
-
+    
     /** Settings section slot entry: render the page directly in the host tree. */
     function SettingsSlotComponent(props) {
       useEffect(ensureStyles, [])
       return h(SkillsPage, { t: props.__t, embedded: true })
     }
-
+    
     // ── Plugin plane contract ────────────────────────────────────────────────
-
+    
     const CLIENT_NAME = '@weibaohui/skills-management'
-
+    
     module.exports = {
       name: CLIENT_NAME,
       inject: ['slots', 'locale'],
@@ -1771,8 +1799,18 @@ window.__ModuleLoader__.load({
             ctx.inject(['inputTriggers', 'sessions'], (scope) => { composerScope = scope })
           }
         } catch {}
-        // connection service for the picker skill catalog (host skill registry,
-        // ui-skill 同源); absence keeps the button hidden.
+        // Picker skill catalog (host skill registry, ui-skill 同源).
+        // 0.1.5+: subpath inject `remote.skills` (just `remote` is not enough —
+        // cordis guards child paths against undeclared inject). Older cores fall
+        // back to `connection.api.skills`. Absence keeps the button's fallback
+        // to the host slash menu.
+        try {
+          if (typeof ctx.inject === 'function') {
+            ctx.inject(['remote', 'remote.skills'], (scope) => {
+              remoteSkillsApi = scope && scope.remote && scope.remote.skills
+            })
+          }
+        } catch {}
         try {
           if (typeof ctx.inject === 'function') {
             ctx.inject(['connection'], (scope) => { connectionApi = scope && scope.connection })
@@ -1833,13 +1871,13 @@ window.__ModuleLoader__.load({
         }, 'skills-management: input left button')
       },
     }
-
+    
     /** Composer tool-row button: 加号+文字 chip，点击在按钮上方打开自带搜索的
      *  技能 picker 浮层（候选 = 宿主技能注册表，ui-skill 同源）；pick 经
      *  slash/input-insert-text 写入 `/<name> `。浮层背板盖住按钮以外的区域，
      *  再点一次按钮会先落在背板上——天然形成开关切换。
-     *  connection 缺席（picker 无目录来源）时回退旧的 toggleSource 宿主菜单；
-     *  inputTriggers/sessions 缺席时按钮隐藏（与旧行为一致）。 */
+     *  目录来源（remote.skills / connection.api）都缺席时回退旧的 toggleSource
+     *  宿主菜单；inputTriggers/sessions 缺席时按钮隐藏（与旧行为一致）。 */
     function ComposerButtonSlot(props) {
       useEffect(ensureStyles, [])
       const [picker, setPicker] = useState(null) // {left, top} 锚点快照；null = 关闭
@@ -1852,12 +1890,12 @@ window.__ModuleLoader__.load({
       const close = () => setPicker(null)
       const open = () => {
         // 目录来源缺席 → 退回宿主斜杠菜单（无搜索，但按钮不消失）
-        if (!connectionApi) { openTriggerSource(composerScope, props.sessionId, liveInput.current, props.source); return }
+        if (!remoteSkillsApi && !connectionApi) { openTriggerSource(composerScope, props.sessionId, liveInput.current, props.source); return }
         let anchor = { left: 16, top: 160 }
         try { if (btnRef.current) anchor = btnRef.current.getBoundingClientRect() } catch {}
         setPicker({ left: anchor.left, top: anchor.top })
         setRows(null)
-        fetchSkillCandidates(connectionApi, composerScope.sessions, props.sessionId)
+        fetchSkillCandidates({ remoteSkills: remoteSkillsApi, connection: connectionApi }, composerScope.sessions, props.sessionId)
           .then((list) => setRows(Array.isArray(list) ? list : []))
           .catch(() => setRows([]))
       }

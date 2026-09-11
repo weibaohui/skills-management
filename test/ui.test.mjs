@@ -101,12 +101,26 @@ test('fetchSkillCandidates maps the host registry and guards absent services', a
   // 子代理会话：ui-skill 同款守卫，直接空目录
   const subagentSessions = { subagentAddress: () => 'subagent://x' }
   assert.deepEqual(await fetchSkillCandidates(null, subagentSessions, 's-sub'), [])
-  // connection 缺席 / api 缺失 → reject（picker 落入空态）
+  // 目录来源缺席 / api 缺失 → reject（picker 落入空态）
   await assert.rejects(() => fetchSkillCandidates(null, {}, 's-1'))
   await assert.rejects(() => fetchSkillCandidates({ api: {} }, {}, 's-1'))
-  // result.ok=false → reject
+  await assert.rejects(() => fetchSkillCandidates({ remoteSkills: null, connection: null }, {}, 's-1'))
+  // result.ok=false → reject（legacy connection.api）
   const badConn = { api: { skills: { list: async () => ({ result: { ok: false } }) } } }
   await assert.rejects(() => fetchSkillCandidates(badConn, {}, 's-bad'))
+  // 0.1.5+ remote.skills：解包信封 { ok, value }，且优先于 connection
+  let remoteCalls = 0
+  let legacyCalls = 0
+  const remoteSkills = { list: async () => { remoteCalls += 1; return { ok: true, value: { skills: [
+    { name: 'lint', description: '检查', modelInvocable: true },
+  ] } } } }
+  const legacyConn = { api: { skills: { list: async () => { legacyCalls += 1; return { result: { ok: true, value: { skills: [] } } } } } } }
+  const remoteRows = await fetchSkillCandidates({ remoteSkills, connection: legacyConn }, {}, `r-${Date.now()}`)
+  assert.deepEqual(remoteRows, [{ name: 'lint', description: '检查', modelInvocable: true }])
+  assert.equal(remoteCalls, 1)
+  assert.equal(legacyCalls, 0)
+  // remote 失败信封 → reject，不静默落回 legacy
+  await assert.rejects(() => fetchSkillCandidates({ remoteSkills: { list: async () => ({ ok: false, error: { code: 'x' } }) }, connection: legacyConn }, {}, `rf-${Date.now()}`))
   // 正常映射 + 60s 内同会话走缓存（list 只调一次）
   let calls = 0
   const conn = { api: { skills: { list: async ({ sessionId }) => { calls += 1; return { result: { ok: true, value: { skills: [

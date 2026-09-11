@@ -66,13 +66,17 @@ let sessionsApi = null
 const sessionsSvc = () => sessionsApi
 
 // Composer services (inputTriggers + sessions) for the ＋ 技能 button plus
-// the `connection` service for the picker's skill catalog: the button opens
+// the skills catalog face for the picker: the button opens
 // the plugin's own searchable picker popover (the host slash menu filters
 // only by a typed query, which a button click cannot provide); the pick is
 // written into the draft through the same scoped `slash/input-insert-text`
 // event the host menu executes. Absence hides the button; nothing else
 // depends on it.
+// dsh 0.1.5+ moved the data plane off `connection.api` onto `ctx.remote.*`
+// (subpath inject `remote.skills`); older cores still expose
+// `connection.api.skills`. Prefer remote when present.
 let composerScope = null
+let remoteSkillsApi = null
 let connectionApi = null
 
 /**
@@ -141,25 +145,40 @@ function refocusComposer() {
 /** Picker popover list cap — beyond this the search input is the filter. */
 const PICKER_ROW_CAP = 200
 
-/** Skill catalog cache for the picker (ui-skill 同源：connection.api.skills). */
+/** Skill catalog cache for the picker (ui-skill 同源：remote.skills / connection.api.skills). */
 let skillCatalog = { sessionId: null, at: 0, rows: null }
 const SKILL_CATALOG_TTL = 60_000
 
 /**
  * Picker candidates from the host skill registry (the same list the `/`
  * skill source shows). Subagent sessions have no catalog (ui-skill 同款守卫);
- * a failed/absent connection rejects → the picker shows its empty state.
+ * a failed/absent catalog source rejects → the picker shows its empty state.
+ *
+ * `catalog` is `{ remoteSkills?, connection? }` from live inject, or a bare
+ * legacy `connection` object (pre-0.1.5 tests / callers).
+ * dsh 0.1.5+ (`remote.skills.list`): unwrapped `{ ok, value: { skills } }`.
+ * Older cores (`connection.api.skills.list`): nested `{ result: { ok, value } }`.
  */
-async function fetchSkillCandidates(connection, sessions, sessionId) {
+async function fetchSkillCandidates(catalog, sessions, sessionId) {
   try { if (sessions && typeof sessions.subagentAddress === 'function' && sessions.subagentAddress(sessionId) !== undefined) return [] } catch {}
   const now = Date.now()
   if (skillCatalog.rows !== null && skillCatalog.sessionId === sessionId && now - skillCatalog.at < SKILL_CATALOG_TTL) return skillCatalog.rows
-  const skills = connection && connection.api && connection.api.skills
-  if (!skills || typeof skills.list !== 'function') throw new Error('connection.api.skills unavailable')
-  const res = await skills.list({ sessionId })
-  const result = res && res.result
-  if (!result || result.ok !== true) throw new Error('skill.list failed')
-  const list = result.value && Array.isArray(result.value.skills) ? result.value.skills : []
+  const bareLegacy = !!(catalog && typeof catalog === 'object' && !('remoteSkills' in catalog) && !('connection' in catalog))
+  const remoteSkills = bareLegacy ? null : (catalog && catalog.remoteSkills)
+  const connection = bareLegacy ? catalog : (catalog && catalog.connection)
+  let list
+  if (remoteSkills && typeof remoteSkills.list === 'function') {
+    const res = await remoteSkills.list({ sessionId })
+    if (!res || res.ok !== true) throw new Error('remote.skills.list failed')
+    list = res.value && Array.isArray(res.value.skills) ? res.value.skills : []
+  } else {
+    const skills = connection && connection.api && connection.api.skills
+    if (!skills || typeof skills.list !== 'function') throw new Error('skills list API unavailable')
+    const res = await skills.list({ sessionId })
+    const result = res && res.result
+    if (!result || result.ok !== true) throw new Error('skill.list failed')
+    list = result.value && Array.isArray(result.value.skills) ? result.value.skills : []
+  }
   const rows = list.map((s) => ({ name: s.name, description: s.description || '', modelInvocable: s.modelInvocable !== false }))
   skillCatalog = { sessionId, at: now, rows }
   return rows
@@ -274,6 +293,8 @@ const ZH = {
   needsUpdateTag: '有更新',
   autoSyncLabel: '每天自动同步',
   syncOnStartupLabel: '启动时同步',
+  publishMarketLabel: '市场技能进 / 菜单',
+  publishMarketHint: '关掉后 / 菜单只剩已安装技能；市场页浏览/安装不受影响',
   save: '保存',
   saved: '设置已保存',
   gitMissing: '未检测到 git',
@@ -416,6 +437,8 @@ const EN = {
   needsUpdateTag: 'Updates available',
   autoSyncLabel: 'Auto sync daily',
   syncOnStartupLabel: 'Sync on startup',
+  publishMarketLabel: 'Market skills in / menu',
+  publishMarketHint: 'When off, / only lists installed skills; market browse/install still works',
   save: 'Save',
   saved: 'Settings saved',
   gitMissing: 'git not found',
@@ -986,6 +1009,7 @@ function MarketSettingsDialog({ t, onClose, onToast, onSynced }) {
   const [repoDir, setRepoDir] = useState('')
   const [autoSync, setAutoSync] = useState(true)
   const [syncOnStartup, setSyncOnStartup] = useState(true)
+  const [publishMarket, setPublishMarket] = useState(false)
 
   const refresh = () => getJson(API + '/market/status').then(d => {
     setStatus(d)
@@ -994,6 +1018,7 @@ function MarketSettingsDialog({ t, onClose, onToast, onSynced }) {
     setRepoDir(d.dir)
     setAutoSync(d.autoSync)
     setSyncOnStartup(d.syncOnStartup)
+    setPublishMarket(!!d.publishMarket)
   }).catch(() => {})
   useEffect(() => { refresh() }, [])
 
@@ -1015,7 +1040,7 @@ function MarketSettingsDialog({ t, onClose, onToast, onSynced }) {
   }
   const doSave = async () => {
     try {
-      const patch = { url, branch, autoSync, syncOnStartup }
+      const patch = { url, branch, autoSync, syncOnStartup, publishMarket }
       if (repoDir !== '' && repoDir !== (status && status.dir)) patch.repoDir = repoDir
       if (token !== '') patch.token = token
       await putSettings(patch)
@@ -1055,7 +1080,10 @@ function MarketSettingsDialog({ t, onClose, onToast, onSynced }) {
             h('label', { style: { display: 'flex', alignItems: 'center', gap: 8, color: 'var(--dsw-alias-label-secondary)', fontSize: 13 } },
               h('input', { type: 'checkbox', checked: autoSync, onChange: e => setAutoSync(e.target.checked) }), t('autoSyncLabel')),
             h('label', { style: { display: 'flex', alignItems: 'center', gap: 8, color: 'var(--dsw-alias-label-secondary)', fontSize: 13 } },
-              h('input', { type: 'checkbox', checked: syncOnStartup, onChange: e => setSyncOnStartup(e.target.checked) }), t('syncOnStartupLabel'))),
+              h('input', { type: 'checkbox', checked: syncOnStartup, onChange: e => setSyncOnStartup(e.target.checked) }), t('syncOnStartupLabel')),
+            h('label', { style: { display: 'flex', alignItems: 'center', gap: 8, color: 'var(--dsw-alias-label-secondary)', fontSize: 13 } },
+              h('input', { type: 'checkbox', checked: publishMarket, onChange: e => setPublishMarket(e.target.checked) }), t('publishMarketLabel')),
+            h('div', { className: 'sk-hint', style: { fontSize: 12 } }, t('publishMarketHint'))),
           h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
             h('input', { className: 'sk-input', value: url, onChange: e => setUrl(e.target.value), placeholder: t('repoUrlLabel'), style: { width: '100%' } }),
             h('input', { className: 'sk-input', value: branch, onChange: e => setBranch(e.target.value), placeholder: t('branchLabel'), style: { width: '100%' } }),
@@ -1653,8 +1681,18 @@ module.exports = {
         ctx.inject(['inputTriggers', 'sessions'], (scope) => { composerScope = scope })
       }
     } catch {}
-    // connection service for the picker skill catalog (host skill registry,
-    // ui-skill 同源); absence keeps the button hidden.
+    // Picker skill catalog (host skill registry, ui-skill 同源).
+    // 0.1.5+: subpath inject `remote.skills` (just `remote` is not enough —
+    // cordis guards child paths against undeclared inject). Older cores fall
+    // back to `connection.api.skills`. Absence keeps the button's fallback
+    // to the host slash menu.
+    try {
+      if (typeof ctx.inject === 'function') {
+        ctx.inject(['remote', 'remote.skills'], (scope) => {
+          remoteSkillsApi = scope && scope.remote && scope.remote.skills
+        })
+      }
+    } catch {}
     try {
       if (typeof ctx.inject === 'function') {
         ctx.inject(['connection'], (scope) => { connectionApi = scope && scope.connection })
@@ -1720,8 +1758,8 @@ module.exports = {
  *  技能 picker 浮层（候选 = 宿主技能注册表，ui-skill 同源）；pick 经
  *  slash/input-insert-text 写入 `/<name> `。浮层背板盖住按钮以外的区域，
  *  再点一次按钮会先落在背板上——天然形成开关切换。
- *  connection 缺席（picker 无目录来源）时回退旧的 toggleSource 宿主菜单；
- *  inputTriggers/sessions 缺席时按钮隐藏（与旧行为一致）。 */
+ *  目录来源（remote.skills / connection.api）都缺席时回退旧的 toggleSource
+ *  宿主菜单；inputTriggers/sessions 缺席时按钮隐藏（与旧行为一致）。 */
 function ComposerButtonSlot(props) {
   useEffect(ensureStyles, [])
   const [picker, setPicker] = useState(null) // {left, top} 锚点快照；null = 关闭
@@ -1734,12 +1772,12 @@ function ComposerButtonSlot(props) {
   const close = () => setPicker(null)
   const open = () => {
     // 目录来源缺席 → 退回宿主斜杠菜单（无搜索，但按钮不消失）
-    if (!connectionApi) { openTriggerSource(composerScope, props.sessionId, liveInput.current, props.source); return }
+    if (!remoteSkillsApi && !connectionApi) { openTriggerSource(composerScope, props.sessionId, liveInput.current, props.source); return }
     let anchor = { left: 16, top: 160 }
     try { if (btnRef.current) anchor = btnRef.current.getBoundingClientRect() } catch {}
     setPicker({ left: anchor.left, top: anchor.top })
     setRows(null)
-    fetchSkillCandidates(connectionApi, composerScope.sessions, props.sessionId)
+    fetchSkillCandidates({ remoteSkills: remoteSkillsApi, connection: connectionApi }, composerScope.sessions, props.sessionId)
       .then((list) => setRows(Array.isArray(list) ? list : []))
       .catch(() => setRows([]))
   }
