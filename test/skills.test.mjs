@@ -12,7 +12,7 @@ const { extractFrontmatter, parseSkillMd, invocationPolicy, installDirName, EXEC
 
 // ── HTTP handler harness ────────────────────────────────────────────────
 
-function setupPlugin(config) {
+function setupPlugin(config, rejection) {
   let handler
   let registered
   let invalidations = 0
@@ -23,6 +23,8 @@ function setupPlugin(config) {
       },
     },
     webServer: { register: (route) => { handler = route.handler } },
+    // 信任栅栏：默认放行（undefined）；用例传入 401/403 即可验证拒绝路径
+    connection: { requestRejection: () => rejection },
     effect: (fn) => fn(),
     logger: { warn: () => {} },
   }
@@ -74,7 +76,18 @@ async function writeSkill(base, rel, meta) {
 test('plugin exports the host-plane contract', () => {
   assert.equal(plugin.name, 'skills-management')
   // 静态注入：settings（token/市场设置持久化）+ agents/agentDefaultModel/sessions（分享任务进程内执行与打开对话）
-  assert.deepEqual(plugin.inject, ['skills', 'webServer', 'settings', 'agents', 'agentDefaultModel', 'sessions'])
+  // + connection（HTTP 路由的信任栅栏）
+  assert.deepEqual(plugin.inject, ['skills', 'webServer', 'settings', 'agents', 'agentDefaultModel', 'sessions', 'connection'])
+})
+
+test('every route sits behind the connection trust fence', async () => {
+  const env = setupPlugin({}, 401)
+  const listing = await env.call('GET', '/skills-management/api')
+  assert.equal(listing.status, 401, 'an unauthenticated listing is refused before any market scan')
+  const settings = await env.call('GET', '/skills-management/api/executor-settings')
+  assert.equal(settings.status, 401, 'an unauthenticated settings read is refused')
+  const run = await env.call('POST', '/skills-management/api/share/run', { prompt: 'x', dir: '/' })
+  assert.equal(run.status, 401, 'share/run never reaches the agent executor unauthenticated')
 })
 
 test('extractFrontmatter requires standalone delimiters', () => {
@@ -787,6 +800,7 @@ test('market settings persist through the host settings service when present', a
     const ctx = {
       skills: { registerProvider: (create) => { create({ signal: new AbortController().signal, invalidate: () => {} }) } },
       webServer: { register: (route) => { globalThis.__settingsRoute = route.handler } },
+      connection: { requestRejection: () => undefined },
       effect: (fn) => fn(),
       logger: { warn: () => {} },
       settings: { register: (ns, schema, opts) => {

@@ -544,7 +544,7 @@ function contentTypeFor(p) {
 
 module.exports = {
   name: 'skills-management',
-  inject: ['skills', 'webServer', 'settings', 'agents', 'agentDefaultModel', 'sessions'],
+  inject: ['skills', 'webServer', 'settings', 'agents', 'agentDefaultModel', 'sessions', 'connection'],
   __internals: { extractFrontmatter, parseSkillMd, invocationPolicy, installDirName, EXECUTOR_DEFS, usageStat, usageMemo, setUsageEncoderOverride: (v) => { usageEncoderOverride = v } },
 
   apply(ctx, config = {}) {
@@ -974,6 +974,14 @@ module.exports = {
       path: '/skills-management/api',
       handler: async (req, res) => {
         try {
+          // 与其它 host 路由一致的信任栅栏：connection 服务的 Host/Origin 检查
+          // 加浏览器认证。缺了它，下面每个路由都能被任意网页跨站调用。
+          const rejection = ctx.connection.requestRejection(req)
+          if (rejection !== undefined) {
+            res.writeHead(rejection)
+            res.end()
+            return
+          }
           const url = new URL(req.url || '/', 'http://dsh.local')
           const apiPath = url.pathname.replace(/\/+$/, '')
           const query = url.searchParams
