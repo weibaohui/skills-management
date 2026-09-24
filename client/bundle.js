@@ -706,20 +706,46 @@ window.__ModuleLoader__.load({
       } catch { return '-' }
     }
     
+    /** 头像底色：名字缺失或非字符串时退化为固定色，绝不在渲染期抛错
+     *  （渲染期 ANY throw 会被 SkillsPage 的 try/catch 换成空面板，见文首注释）。 */
     function gradient(name) {
+      const src = String(name || '')
       let hash = 0
-      for (let i = 0; i < name.length; i++) hash = ((hash << 5) - hash + name.charCodeAt(i)) | 0
+      for (let i = 0; i < src.length; i++) hash = ((hash << 5) - hash + src.charCodeAt(i)) | 0
       const h1 = Math.abs(hash) % 360
       return `linear-gradient(135deg, hsl(${h1},55%,55%), hsl(${(h1 + 40) % 360},45%,45%))`
     }
     
-    const shortName = (name) => name.includes('/') ? name.split('/').slice(1).join('/') : name
+    const shortName = (name) => {
+      const src = String(name || '')
+      return src.includes('/') ? src.split('/').slice(1).join('/') : src
+    }
     
     /** Shared predicate for skill filtering (name / description / keywords). */
     function matchSkill(s, lower) {
       return (s.name || '').toLowerCase().includes(lower) ||
         (s.description || '').toLowerCase().includes(lower) ||
         (s.keywords || []).some(k => String(k).toLowerCase().includes(lower))
+    }
+    
+    /** 「已在本机 DSH 库」判定。市场列表行带 `installed`（服务端用已装技能名集合算出），
+     *  详情接口带 `isInstalled`；两个面都认，卡片/详情才不会漏标。 */
+    function isInstalledRow(s) {
+      return s?.installed === true || s?.isInstalled === true
+    }
+    
+    /** 就地翻转市场行的 installed 位（保持原数组不命中时引用不变，便于 React 跳过重渲染）。
+     *  安装/删除只影响一行，没必要为它重走一遍 6k+ 的全市场扫描（GET / 约 2.3s）。 */
+    function patchMarketInstalled(market, name, on) {
+      if (!Array.isArray(market) || !name) return market
+      const target = String(name)
+      let hit = false
+      const next = market.map(s => {
+        // 市场行同时带 relPath（name）与末段（shortName），两个都比对
+        if (s.name === target || s.shortName === target) { hit = true; return { ...s, installed: on } }
+        return s
+      })
+      return hit ? next : market
     }
     
     /** 注入开销一行文案：token 在（宿主装了词表）→「≈N token · M 字符」，
@@ -891,6 +917,7 @@ window.__ModuleLoader__.load({
     function SkillCard({ row, s, t, onOpen, onInstall, onDelete, onShare, onToggleVisible }) {
       const name = shortName(s.name)
       const usage = usageText(s, t)
+      const installed = isInstalledRow(s)
       return h('div', { className: 'sk-card', role: 'button', tabIndex: 0,
           onClick: () => onOpen(s),
           onKeyDown: e => e.key === 'Enter' && onOpen(s) },
@@ -906,10 +933,16 @@ window.__ModuleLoader__.load({
             h(Tag, null, row.label),
             row.readOnly && h(Tag, { tone: 'danger' }, t('readOnlyTag')),
             s.version && h(Tag, { tone: 'accent' }, 'v' + s.version),
+            installed && h(Tag, { tone: 'ok' }, t('installedTag')),
             (row.key === 'dsh' || row.key === 'agents') && s.modelInvocable === false && h(Tag, { tone: 'danger' }, t('hiddenTag'))),
           h('div', { className: 'sk-rowbtns' },
-            row.key !== 'dsh' && h(ButtonLite, { primary: true, small: true,
-              onClick: e => { e.stopPropagation(); onInstall(row, s.installName || s.name) } }, t('toDsh')),
+            // Already in the DSH library: offer a disabled state chip instead of an
+            // Install button. Re-installing would otherwise hit the server's
+            // `skill '<x>' already installed` guard and surface as an error alert.
+            row.key !== 'dsh' && (installed
+              ? h(ButtonLite, { small: true, disabled: true, title: t('installedTag') }, t('installedTag'))
+              : h(ButtonLite, { primary: true, small: true,
+                onClick: e => { e.stopPropagation(); onInstall(row, s.installName || s.name) } }, t('toDsh'))),
             (row.key === 'dsh' || row.key === 'agents') && h(ButtonLite, { small: true,
               title: s.modelInvocable === false ? t('restoreAction') : t('hideAction'),
               onClick: e => { e.stopPropagation(); onToggleVisible(row, s.name, s.modelInvocable === false) } },
@@ -967,6 +1000,7 @@ window.__ModuleLoader__.load({
       const [toast, setToast] = useState(false)
       const meta = data?.meta || {}
       const row = sel.executorKey ? executors.find(x => x.key === sel.executorKey) : null
+      const installed = isInstalledRow(data)
     
       useEffect(() => {
         let alive = true
@@ -989,7 +1023,7 @@ window.__ModuleLoader__.load({
           const r = await fetch(API, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
           if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status)
           setConfirming(false)
-          onDeleted()
+          onDeleted(sel.name)
         } catch (e) { setConfirming(false); alert(t('operationFailed') + ': ' + e.message) }
       }
     
@@ -999,7 +1033,7 @@ window.__ModuleLoader__.load({
           if (sel.executorKey && sel.executorKey !== 'dsh') body.from = sel.executorKey
           const r = await fetch(API + '/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
           if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status)
-          onInstalled()
+          onInstalled(sel.name)
         } catch (e) { alert(t('operationFailed') + ': ' + e.message) }
       }
     
@@ -1032,7 +1066,8 @@ window.__ModuleLoader__.load({
               h('div', { className: 'sk-page' },
                 h('div', { className: 'sk-hint' }, meta.description || meta.whenToUse || ''),
                 h('div', { className: 'sk-toolbar' },
-                  row && row.key !== 'dsh' && h(P.Button, { variant: 'primary', size: 'sm', onClick: doInstall }, `${t('installFrom', { label: row.label })}`),
+                  row && row.key !== 'dsh' && !installed && h(P.Button, { variant: 'primary', size: 'sm', onClick: doInstall }, `${t('installFrom', { label: row.label })}`),
+                  row && row.key !== 'dsh' && installed && h(Tag, { tone: 'ok' }, t('installedTag')),
                   row && row.key === 'dsh' && h(Tag, { tone: 'ok' }, t('activeInDsh')),
                   row && (row.key === 'dsh' || row.key === 'agents') && h('span', { className: 'sk-inv-toggle', title: t('invocationHint') },
                     h('span', { className: 'sk-dir' }, t('invocationToggle')),
@@ -1331,10 +1366,11 @@ window.__ModuleLoader__.load({
             ]))
     }
     
-    /** Incremental grid: renders the first pageSize cards and grows on demand —
-     *  the market collection alone holds 6k+ skills and must not mount at once.
-     *  Key the element by the active filter so filtering resets the window. */
-    function PagedGrid({ items, render, t, pageSize = 120, grow = 240, keyPrefix = '' }) {
+    /** 增量网格：先渲染前 pageSize 张，按需增长——市场集合有 6k+ 条，不能一次全挂。
+     *  以「当前筛选」作 key，让筛选变化时重置窗口。
+     *  [性能] pageSize 从 120 降到 60：首屏要一次性挂载全部卡片，120 张的
+     *  Avatar 渐变 / 时间格式化 / 注入开销文案开销明显，60 张已够撑满首屏。 */
+    function PagedGrid({ items, render, t, pageSize = 60, grow = 120, keyPrefix = '' }) {
       const [shown, setShown] = useState(pageSize)
       return [
         h('div', { className: 'sk-grid' }, items.slice(0, shown).map(render)),
@@ -1391,7 +1427,11 @@ window.__ModuleLoader__.load({
           h(P.Button, { variant: 'ghost', size: 'sm', onClick: onBack }, t('backCards')),
           h('span', { className: 'sk-title' }, t('title')),
           h(InputBox, { value: searchText, placeholder: t('searchAll'), onSearch }),
-          SourceFilterEl({ rows: executors.filter(r => r.dirExists), value: sourceFilter, onChange: onFilter, t }),
+          // SourceFilter owns a useState, so it must be mounted as an element. Calling it
+          // as a plain function attributes that hook to AllSkillsView — which returns the
+          // Spinner early (zero hooks) while catalogs load, then renders one hook once they
+          // arrive: React throws "Rendered more hooks than during the previous render".
+          h(SourceFilter, { rows: executors.filter(r => r.dirExists), value: sourceFilter, onChange: onFilter, t }),
           SortSelect({ value: sortBy, onChange: onSort, t }),
           h('span', { className: 'spacer' }),
           h(Tag, null, `${items.length} ${t('skillsSuffix')}`)),
@@ -1427,20 +1467,34 @@ window.__ModuleLoader__.load({
           h('span', { className: 'sk-dir' }, row.dir)),
         !skills.length
           ? h(Empty, null, searchText ? t('emptySearch') : t('emptySkillsIn', { label: row.label }))
-          : h(PagedGrid, { key: 'ed' + row.key + searchText + sortBy, items: skills, t,
+          : h(PagedGrid, { key: 'ed' + row.key + sortBy, items: skills, t,
               render: s => h(SkillCard, { key: s.name, row, s, t, onOpen, onInstall, onDelete, onShare, onToggleVisible }) }),
       ]
     }
     
     function InputBox({ value, placeholder, onSearch }) {
+      // [性能] 本地暂存 + 300ms 防抖。原实现每次击键都把值冒泡到 SkillsPage 的 setState，
+      // 而网格的 key 含搜索词 → 每敲一个字符就整体重建一次卡片网格。
+      // 输入框自身保持即时回显；外部重置（切 tab 等）仍会同步回来。
+      const [local, setLocal] = useState(value)
+      const sentRef = useRef(value)
+      const timerRef = useRef(null)
+      useEffect(() => {
+        if (value !== sentRef.current) { sentRef.current = value; setLocal(value) }
+      }, [value])
+      useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current) }, [])
+      const emit = (next) => {
+        setLocal(next)
+        if (timerRef.current) clearTimeout(timerRef.current)
+        timerRef.current = setTimeout(() => { sentRef.current = next; onSearch(next) }, 300)
+      }
       if (prim('Input')) {
-        return h(P.Input, { value, placeholder, className: 'sk-input', onChange: e => onSearch(e.target.value),
+        return h(P.Input, { value: local, placeholder, className: 'sk-input', onChange: e => emit(e.target.value),
           style: { minWidth: 220 } })
       }
-      return h('input', { value, placeholder, onChange: e => onSearch(e.target.value),
+      return h('input', { value: local, placeholder, onChange: e => emit(e.target.value),
         style: { minWidth: 220, minHeight: 32, borderRadius: 8, border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-1)', color: 'var(--dsw-alias-label-primary)', padding: '6px 12px' } })
     }
-    function SourceFilterEl(args) { return SourceFilter(args) }
     
     // ── App root ─────────────────────────────────────────────────────────────
     
@@ -1480,6 +1534,16 @@ window.__ModuleLoader__.load({
         setBaseStale(false)
         setBaseLoading(true)
         getJson(API).then(setBase).catch(() => {}).finally(() => setBaseLoading(false))
+      }
+      // Install/delete only flips one row's `installed` flag, so patch that row in place
+      // instead of re-walking the whole 6k+ market (GET / takes ~2.3s). A stale flag is
+      // still set so the next visit to the market tab reconciles with the server.
+      const markMarketInstalled = (name, on) => {
+        setBase(prev => {
+          if (!prev) return prev
+          const market = patchMarketInstalled(prev.market, name, on)
+          return market === prev.market ? prev : { ...prev, market }
+        })
       }
       useEffect(reloadExecutors, [])
       useEffect(() => {
@@ -1540,6 +1604,7 @@ window.__ModuleLoader__.load({
           setToastText(t('installedToast'))
           setTimeout(() => setToastText(null), 2600)
           reloadExecutors()
+          markMarketInstalled(name, true)
           setBaseStale(true)
         } catch (e) { alert(t('operationFailed') + ': ' + e.message) }
       }
@@ -1548,6 +1613,7 @@ window.__ModuleLoader__.load({
         await quickDelete(t, pendingDelete.executor, pendingDelete.name)
         setPendingDelete(null)
         reloadExecutors()
+        markMarketInstalled(pendingDelete.name, false)
         setBaseStale(true)
       }
     
@@ -1608,7 +1674,7 @@ window.__ModuleLoader__.load({
               h(InputBox, { value: searchMarketDrill, placeholder: t('filterWithin', { label: marketDrill }), onSearch: setSearchMarketDrill }),
               SortSelect({ value: sortBy, onChange: setSortBy, t })),
             sk.length
-              ? h(PagedGrid, { key: 'md' + marketDrill + searchMarketDrill + sortBy, items: sk, t,
+              ? h(PagedGrid, { key: 'md' + marketDrill + sortBy, items: sk, t,
                   render: s => h(SkillCard, { key: s.name, row: mkRow(s.source), s: mkCard(s), t,
                     onOpen: item => openDetail({ name: item.installName || item.name }, null),
                     onInstall: (_r, name) => setPendingInstall({ row: null, name }),
@@ -1626,7 +1692,7 @@ window.__ModuleLoader__.load({
               h('span', { className: 'spacer' }),
               h(Tag, null, `${sk.length} ${t('skillsSuffix')}`)),
             sk.length
-              ? h(PagedGrid, { key: 'ma' + searchMarketAll + sortBy, items: sk, t,
+              ? h(PagedGrid, { key: 'ma' + sortBy, items: sk, t,
                   render: s => h(SkillCard, { key: s.name, row: mkRow(s.source), s: mkCard(s), t,
                     onOpen: item => openDetail({ name: item.installName || item.name }, null),
                     onInstall: (_r, name) => setPendingInstall({ row: null, name }),
@@ -1671,8 +1737,8 @@ window.__ModuleLoader__.load({
         h('div', { className: 'sk-body' }, body),
         sel && h(DetailModal, { sel, executors, t,
           onClose: () => setSel(null),
-          onInstalled: () => { setSel(null); reloadExecutors(); setBaseStale(true) },
-          onDeleted: () => { setSel(null); reloadExecutors(); setBaseStale(true) } }),
+          onInstalled: (name) => { setSel(null); reloadExecutors(); markMarketInstalled(name, true); setBaseStale(true) },
+          onDeleted: (name) => { setSel(null); reloadExecutors(); markMarketInstalled(name, false); setBaseStale(true) } }),
         shareParams && h(ShareSkillDialog, {
           t, params: shareParams, onClose: () => setShareParams(null),
           onToast: (text) => { setMarketToast(text); setTimeout(() => setMarketToast(null), 3000) },
@@ -1764,7 +1830,7 @@ window.__ModuleLoader__.load({
     module.exports = {
       name: CLIENT_NAME,
       inject: ['slots', 'locale'],
-      __internals: { NS, ZH, EN, matchSkill, formatSize, formatTime, usageText, sortSkills, openTriggerSource, insertComposerText, fetchSkillCandidates },
+      __internals: { NS, ZH, EN, matchSkill, formatSize, formatTime, usageText, sortSkills, gradient, shortName, isInstalledRow, patchMarketInstalled, openTriggerSource, insertComposerText, fetchSkillCandidates },
       /** Test/host helper: mount a standalone page into any container. */
       __boot(container, opts = {}) {
         ensureStyles()

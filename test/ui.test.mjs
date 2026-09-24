@@ -37,6 +37,116 @@ test('no hardcoded colors in the client source — ui-theme tokens only', () => 
   assert.ok(src.includes('var(--dsw-alias-bg-layer-1'), 'surface token consumed')
 })
 
+test('no component with hooks is invoked as a plain function', () => {
+  // Regression: AllSkillsView called `SourceFilterEl({...})`, a wrapper that invoked
+  // SourceFilter() directly. SourceFilter owns a useState, so that hook landed on
+  // AllSkillsView — which returns <Spinner/> early (zero hooks) while catalogs load and
+  // gains one hook afterwards, throwing "Rendered more hooks than during the previous
+  // render" and blanking the whole panel. See client/index.js AllSkillsView.
+  const src = readFileSync(new URL('../client/index.js', import.meta.url), 'utf8')
+  const lines = src.split('\n')
+
+  const decls = []
+  lines.forEach((l, i) => {
+    const m = /^function ([A-Za-z0-9_]+)\s*\(/.exec(l)
+    if (m) decls.push({ name: m[1], line: i + 1 })
+  })
+
+  const hasHooks = new Map()
+  decls.forEach((d, k) => {
+    const end = k + 1 < decls.length ? decls[k + 1].line - 1 : lines.length
+    const body = lines.slice(d.line - 1, end).join('\n')
+    hasHooks.set(d.name, /\b(useState|useEffect|useRef|useMemo|useCallback)\s*\(/.test(body))
+  })
+
+  const offenders = []
+  for (const { name, line } of decls) {
+    if (!hasHooks.get(name)) continue
+    const re = new RegExp(`(^|[^\\w.$])${name}\\s*\\(`, 'g')
+    lines.forEach((l, i) => {
+      if (i + 1 === line) return
+      const code = l.replace(/\/\/.*$/, '').trim()
+      if (!code) return
+      re.lastIndex = 0
+      let m
+      while ((m = re.exec(code)) !== null) {
+        // `h(Name, ...)` is the correct mount; anything else is a direct call.
+        if (/\bh\s*\(\s*$/.test(code.slice(0, m.index + m[1].length))) continue
+        offenders.push(`${name} called at line ${i + 1}`)
+      }
+    })
+  }
+  assert.deepEqual(offenders, [], 'mount hook-owning components with h(), never call them directly')
+})
+
+test('gradient/shortName never throw on missing or non-string names', () => {
+  // Both run during render; a throw here is swallowed by SkillsPage's try/catch and
+  // surfaces as a blank panel. They must degrade instead of raising.
+  const { gradient, shortName } = plugin.__internals
+  for (const bad of [undefined, null, '', 42]) {
+    assert.doesNotThrow(() => gradient(bad), `gradient(${String(bad)})`)
+    assert.doesNotThrow(() => shortName(bad), `shortName(${String(bad)})`)
+  }
+  assert.equal(shortName('affaan-m-ECC/agent-harness-construction'), 'agent-harness-construction')
+  assert.equal(shortName(undefined), '')
+  assert.equal(shortName(42), '42')
+})
+
+test('market rows already in the library are badged, not offered for install', () => {
+  // Regression: the market list has always shipped `installed` (src/index.js builds it
+  // from the installed-name set) and the detail endpoint ships `isInstalled`, but
+  // SkillCard never read either — so an installed skill still showed an active Install
+  // button, inviting a duplicate install that the server rejects with
+  // "skill '<x>' already installed".
+  const { isInstalledRow, patchMarketInstalled } = plugin.__internals
+
+  assert.equal(isInstalledRow({ installed: true }), true, 'market list plane')
+  assert.equal(isInstalledRow({ isInstalled: true }), true, 'detail plane')
+  assert.equal(isInstalledRow({ installed: false }), false)
+  assert.equal(isInstalledRow({}), false)
+  assert.equal(isInstalledRow(undefined), false)
+
+  // optimistic in-place flip must match relPath and leaf, and keep identity when it misses
+  const market = [
+    { name: 'affaan-m-ECC/agent-harness-construction', shortName: 'agent-harness-construction', installed: false },
+    { name: 'other/skill', shortName: 'skill', installed: false },
+  ]
+  const flipped = patchMarketInstalled(market, 'affaan-m-ECC/agent-harness-construction', true)
+  assert.equal(flipped[0].installed, true, 'matched by relPath')
+  assert.equal(flipped[1].installed, false, 'other rows untouched')
+  assert.equal(market[0].installed, false, 'input not mutated')
+
+  const byLeaf = patchMarketInstalled(market, 'skill', true)
+  assert.equal(byLeaf[1].installed, true, 'matched by shortName')
+
+  assert.equal(patchMarketInstalled(market, 'nope', true), market, 'miss keeps array identity')
+  assert.equal(patchMarketInstalled(market, undefined, true), market)
+  assert.equal(patchMarketInstalled(undefined, 'x', true), undefined)
+
+  // the card must actually consume the flag
+  const src = readFileSync(new URL('../client/index.js', import.meta.url), 'utf8')
+  assert.ok(/const installed = isInstalledRow\(s\)/.test(src), 'SkillCard derives installed')
+  assert.ok(/installed && h\(Tag, \{ tone: 'ok' \}, t\('installedTag'\)\)/.test(src), 'badge rendered')
+  assert.ok(/row\.key !== 'dsh' && \(installed/.test(src), 'install button gated on installed')
+  assert.ok(/markMarketInstalled\(name, true\)/.test(src), 'install refreshes the badge')
+})
+
+test('search input is debounced and does not reset the grid on every keystroke', () => {
+  // Regression: InputBox bubbled every keystroke straight into SkillsPage's state, and
+  // each PagedGrid was keyed on the search term — so typing rebuilt the whole card grid
+  // (up to pageSize cards, each with an Avatar gradient and a token/char stat line)
+  // once per character. Defer the bubbled value and drop the search term from the key.
+  const src = readFileSync(new URL('../client/index.js', import.meta.url), 'utf8')
+  assert.ok(/timerRef\.current = setTimeout\(\(\) => \{ sentRef\.current = next; onSearch\(next\) \}, 300\)/.test(src),
+    'InputBox debounces the bubbled value')
+  assert.ok(/const \[local, setLocal\] = useState\(value\)/.test(src), 'InputBox keeps local echo state')
+
+  for (const bad of [/key: 'ed' \+ row\.key \+ searchText/, /key: 'md' \+ marketDrill \+ searchMarketDrill/, /key: 'ma' \+ searchMarketAll/]) {
+    assert.equal(bad.test(src), false, `search term must not be part of the PagedGrid key: ${bad}`)
+  }
+  assert.ok(/pageSize = 60, grow = 120/.test(src), 'first paint mounts fewer cards')
+})
+
 test('matchSkill covers name/description/keywords case-insensitively', () => {
   const skill = { name: 'Lark-Base', description: '多维表格', keywords: ['Feishu'] }
   assert.ok(matchSkill(skill, 'lark'))
