@@ -494,9 +494,6 @@ const DEFAULT_MARKET_SYNC = {
 /** User-settings namespace persisted through the host ctx.settings service
  *  (local provider → $DSH_HOME/settings.yaml). Falls back to an in-memory
  *  override sheet when the service is absent (tests, minimal compositions). */
-// 命名空间必须匹配 /^[a-z][a-z0-9-]*$/ —— 点号形式会被 settings 写入通道拒绝
-const MARKET_SETTINGS_NS = 'skills-management-market'
-
 function marketSettingsSchema() {
   if (!Schema) return null
   return Schema.object({
@@ -513,10 +510,8 @@ function marketSettingsSchema() {
 
 // ── Executor（本机技能来源）运行时 sheet ─────────────────────────────────
 // 内置表 EXECUTOR_DEFS 永远是默认值，这份 sheet 只存用户增量（目录覆盖 /
-// 停用 / 新增），所以「恢复默认」= 清空整个 section。与 cordis 静态配置
+// 停用 / 新增），所以「恢复默认」= 清空整个 sheet。与 cordis 静态配置
 // （executorDirs/disabledExecutors/extraExecutors）的优先级：cordis 最高。
-const EXECUTOR_SETTINGS_NS = 'skills-management-executors'
-
 function executorSettingsSchema() {
   if (!Schema) return null
   return Schema.object({
@@ -531,10 +526,23 @@ function executorSettingsSchema() {
 }
 const EXECUTOR_SHEET_DEFAULTS = Object.freeze({ dirs: {}, disabled: [], extra: [] })
 
-function mergeMarketSync(config, overrides) {
-  const cfg = (config && config.marketSync && typeof config.marketSync === 'object') ? config.marketSync : {}
-  return { ...DEFAULT_MARKET_SYNC, ...cfg, ...(overrides || {}) }
-}
+// ── 0.1.7 settings 接线 ──
+// settings 服务不再支持 ctx.settings.register（且一条插件 entry 只有一个 id）：
+// 两个旧 scope（market / executors）合并为模块顶层导出的一个 volatile Config，
+// marketSync / executorSheet 各为一个 volatile 子对象——volatile 节点的整棵子树
+// 都可被设置 UI 投影与 ctx.settings.update 写回。读走 describe() 投影，写走
+// ctx.settings.update('skills-management', { marketSync | executorSheet: … })，
+// 持久化进 profile patch（重启不丢）。marketRepoDir 为旧版平铺配置兼容位。
+let Config = null
+try {
+  Config = Schema
+    ? Schema.object({
+      marketSync: marketSettingsSchema().volatile(),
+      marketRepoDir: Schema.string().volatile(),
+      executorSheet: executorSettingsSchema().volatile(),
+    })
+    : null
+} catch { /* schemastery <3.18.4 无 .volatile()：降级为无 Config（设置写回不可用），插件运行不受影响 */ }
 
 // ── Share-run jobs: real execution via the official headless channel
 // (`dsh --profile headless "<task>"`, cwd = the skill directory — the
@@ -548,6 +556,7 @@ function contentTypeFor(p) {
 
 module.exports = {
   name: 'skills-management',
+  Config,
   inject: ['skills', 'webServer', 'settings', 'agents', 'agentDefaultModel', 'sessions', 'connection'],
   __internals: { extractFrontmatter, parseSkillMd, invocationPolicy, installDirName, EXECUTOR_DEFS, usageStat, usageMemo, setUsageEncoderOverride: (v) => { usageEncoderOverride = v } },
 
@@ -587,12 +596,10 @@ module.exports = {
     const executorDirsOverride = config.executorDirs !== undefined && config.executorDirs !== null && typeof config.executorDirs === 'object' ? config.executorDirs : {}
     const disabledExecutors = new Set(Array.isArray(config.disabledExecutors) ? config.disabledExecutors : [])
     const cordisExtras = (Array.isArray(config.extraExecutors) ? config.extraExecutors : []).filter((e) => e !== null && typeof e === 'object')
-    let executorSettingsScope = null
-    const executorSettingsOverrides = {} // fallback sheet when the service is absent
+    const executorSettingsOverrides = {} // 进程内兜底：写回缺席/失败时保本次运行一致
     const runtimeSheet = () => {
-      const raw = executorSettingsScope && typeof executorSettingsScope.get === 'function'
-        ? executorSettingsScope.get()
-        : executorSettingsOverrides
+      const doc = (liveSettings && typeof liveSettings === 'object') ? liveSettings : {}
+      const raw = (doc.executorSheet && typeof doc.executorSheet === 'object') ? doc.executorSheet : executorSettingsOverrides
       const v = raw && typeof raw === 'object' ? raw : {}
       return {
         dirs: v.dirs !== null && typeof v.dirs === 'object' && !Array.isArray(v.dirs) ? v.dirs : {},
@@ -789,8 +796,7 @@ module.exports = {
     let marketState = { lastSyncAt: undefined, lastResult: undefined }
     // User-facing settings live in the host settings service when present;
     // the local json only carries runtime sync bookkeeping.
-    let settingsScope = null
-    const settingsOverrides = {}  // fallback sheet when the service is absent
+    const settingsOverrides = {}  // 进程内兜底（market 同步设置）
     const marketStateLoaded = fsP.readFile(marketStateFile, 'utf8')
       .then(raw => {
         const parsed = JSON.parse(raw)
@@ -801,9 +807,9 @@ module.exports = {
           const legacy = parsed.settings
           Promise.resolve().then(async () => {
             await marketStateLoaded
-            if (settingsScope && typeof settingsScope.update === 'function') {
+            if (ctx.settings && typeof ctx.settings.update === 'function') {
               try {
-                await settingsScope.update(legacy)
+                await ctx.settings.update('skills-management', { marketSync: legacy })
                 await fsP.writeFile(marketStateFile, JSON.stringify(marketState, null, 2), { mode: 0o600 })
               } catch (e) { ctx.logger.warn(`skills-management: legacy settings migration: ${e && e.message}`) }
             } else {
@@ -822,27 +828,50 @@ module.exports = {
       if (config.marketRepoDir !== undefined) base.repoDir = resolve(expandTilde(config.marketRepoDir))
       return base
     }
-    // settings 注册：静态 inject 已保证 ctx.settings 就绪（此前走动态 ctx.inject 且
-    // schema 用 zod——不兼容导致 register 静默失败，token 只能存内存、重启即失）
-    if (Schema && ctx.settings && typeof ctx.settings.register === 'function') {
+    function readDescriptor() {
       try {
-        settingsScope = ctx.settings.register(MARKET_SETTINGS_NS, marketSettingsSchema(), { base: baseSettings() })
-      } catch (e) { ctx.logger.warn(`skills-management: settings register: ${e && e.message}`) }
-      try {
-        executorSettingsScope = ctx.settings.register(EXECUTOR_SETTINGS_NS, executorSettingsSchema(), { base: EXECUTOR_SHEET_DEFAULTS })
-      } catch (e) { ctx.logger.warn(`skills-management: executor settings register: ${e && e.message}`) }
+        if (!ctx.settings || typeof ctx.settings.describe !== 'function') return null
+        return ctx.settings.describe().find((x) => x.ns === 'skills-management') || null
+      } catch { return null }
     }
+    let liveSettings = {} // settings 文档实时值（document-updated 事件驱动刷新）
+    // apply 时 loader 可能尚未就绪（describe 投影里还没有本插件条目），间隔重试
+    function refreshLive(attempt = 0) {
+      const d = readDescriptor()
+      if (d) {
+        if (d.value && typeof d.value === 'object') liveSettings = d.value
+        return
+      }
+      if (attempt < 15) setTimeout(() => { refreshLive(attempt + 1) }, 2000).unref?.()
+    }
+    refreshLive()
+
+    // settings 文档变更（dsh 自动生成的设置页、本插件面板写回）刷新实时值
+    try {
+      if (ctx.on && typeof ctx.on === 'function') {
+        ctx.effect(() => {
+          const off = ctx.on('settings/document-updated', (ns) => {
+            if (ns !== 'skills-management') return
+            const d = readDescriptor()
+            if (d && d.value && typeof d.value === 'object') liveSettings = d.value
+          })
+          return () => { try { off() } catch {} }
+        }, 'skills-management: settings watch')
+      }
+    } catch { /* 事件订阅不可用：写回后靠 overrides 维持本次运行 */ }
     const saveMarketState = async () => {
       // 0600: the state file may carry the access token
       try { await fsP.writeFile(marketStateFile, JSON.stringify(marketState, null, 2), { mode: 0o600 }) } catch {}
       try { await fsP.chmod(marketStateFile, 0o600) } catch {}
     }
     const marketSettings = () => {
-      if (settingsScope && typeof settingsScope.get === 'function') {
-        const v = settingsScope.get()
-        if (v && typeof v === 'object') return { ...baseSettings(), ...v }
+      const doc = (liveSettings && typeof liveSettings === 'object') ? liveSettings : {}
+      const docSync = (doc.marketSync && typeof doc.marketSync === 'object') ? doc.marketSync : {}
+      const out = { ...baseSettings(), ...docSync, ...settingsOverrides }
+      if (doc.marketRepoDir !== undefined && doc.marketRepoDir !== null && doc.marketRepoDir !== '') {
+        out.repoDir = resolve(expandTilde(String(doc.marketRepoDir)))
       }
-      return mergeMarketSync(config, settingsOverrides)
+      return out
     }
 
     let marketSyncRun = null
@@ -1040,18 +1069,23 @@ module.exports = {
               if (typeof body[key] === 'string' && body[key] !== '') patch[key] = body[key]
             }
             // token: non-empty string sets it; null or '' clears it. Never echoed.
+            let clearToken = false
             if (typeof body.token === 'string' && body.token !== '') patch.token = body.token
-            if (body.token === null || body.token === '') patch.token = undefined
+            if (body.token === null || body.token === '') clearToken = true
             if (typeof body.repoDir === 'string' && body.repoDir !== '') {
               patch.repoDir = resolve(expandTilde(body.repoDir))
             }
             for (const key of ['autoSync', 'syncOnStartup', 'publishMarket']) {
               if (typeof body[key] === 'boolean') patch[key] = body[key]
             }
-            if (settingsScope && typeof settingsScope.update === 'function') {
-              await settingsScope.update(patch)
-            } else {
-              Object.assign(settingsOverrides, patch)
+            if (clearToken) delete settingsOverrides.token
+            else Object.assign(settingsOverrides, patch)
+            // 0.1.7 持久化：平铺 patch 挂进 marketSync: 子对象；token 清空走 mutate.unset
+            if (ctx.settings && typeof ctx.settings.update === 'function') {
+              try {
+                if (Object.keys(patch).length > 0) await ctx.settings.update('skills-management', { marketSync: patch })
+                if (clearToken) await ctx.settings.mutate('skills-management', [{ op: 'unset', path: ['marketSync', 'token'] }])
+              } catch (e) { ctx.logger.warn(`skills-management: settings update 失败（仅本次运行生效）: ${e && e.message}`) }
             }
             // publishMarket 直接决定 provider.list() 的候选集合，改完立刻让
             // `/` 菜单重读注册表，不必等 skills/change 或重启。
@@ -1108,12 +1142,15 @@ module.exports = {
               }
             }
             const section = { dirs, disabled, extra }
-            if (executorSettingsScope && typeof executorSettingsScope.replace === 'function') {
-              await executorSettingsScope.replace(section)
-            } else if (executorSettingsScope && typeof executorSettingsScope.update === 'function') {
-              await executorSettingsScope.update(section)
-            } else {
-              Object.assign(executorSettingsOverrides, section)
+            Object.assign(executorSettingsOverrides, section)
+            // 0.1.7 持久化：sheet 是全量提交，先 unset 再 set，避免深层 merge 残留已删除的键
+            if (ctx.settings && typeof ctx.settings.update === 'function') {
+              try {
+                await ctx.settings.mutate('skills-management', [
+                  { op: 'unset', path: ['executorSheet'] },
+                  { op: 'set', path: ['executorSheet'], value: section },
+                ])
+              } catch (e) { ctx.logger.warn(`skills-management: executor sheet update 失败（仅本次运行生效）: ${e && e.message}`) }
             }
             sendJson(res, 200, { executors: executorSheetProjection(), settingsFile: join(dshHome(), 'settings.yaml') })
             return
