@@ -535,10 +535,11 @@ const EXECUTOR_SHEET_DEFAULTS = Object.freeze({ dirs: {}, disabled: [], extra: [
 // 持久化进 profile patch（重启不丢）。marketRepoDir 为旧版平铺配置兼容位。
 let Config = null
 try {
+  // 兼容位（config.marketRepoDir）不进 Config——纯字符串字段经宿主投影会物化成
+  // {}，反而毒化配置；patch 里的未知键本来就能透传，baseSettings 直接读即可。
   Config = Schema
     ? Schema.object({
       marketSync: marketSettingsSchema().volatile(),
-      marketRepoDir: Schema.string().volatile(),
       executorSheet: executorSettingsSchema().volatile(),
     })
     : null
@@ -825,7 +826,10 @@ module.exports = {
       for (const key of ['url', 'branch', 'gitBinary', 'autoSync', 'syncOnStartup', 'publishMarket']) {
         if (cfg[key] !== undefined) base[key] = cfg[key]
       }
-      if (config.marketRepoDir !== undefined) base.repoDir = resolve(expandTilde(config.marketRepoDir))
+      // 0.1.7 config 回写/投影可能给出 null 等非字符串值：类型不对就走默认，别让激活崩掉
+      if (config.marketRepoDir !== undefined && config.marketRepoDir !== null && typeof config.marketRepoDir === 'string' && config.marketRepoDir !== '') {
+        base.repoDir = resolve(expandTilde(config.marketRepoDir))
+      }
       return base
     }
     function readDescriptor() {
