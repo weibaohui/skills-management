@@ -351,6 +351,10 @@ const ZH = {
   totalSize: '共 {size}',
   copy: '复制内容',
   copied: '已复制到剪贴板',
+  mdCodeLabel: '代码',
+  mdCodeWrap: '自动换行',
+  mdCodeUnwrap: '取消换行',
+  mdFootnotes: '脚注',
   installFrom: '从 {label} 安装',
   installTitle: '安装',
   installOk: '确认安装',
@@ -495,6 +499,10 @@ const EN = {
   totalSize: '{size}',
   copy: 'Copy content',
   copied: 'Copied to clipboard',
+  mdCodeLabel: 'Code',
+  mdCodeWrap: 'Wrap lines',
+  mdCodeUnwrap: 'No wrap',
+  mdFootnotes: 'Footnotes',
   installFrom: 'Install from {label}',
   installTitle: 'Install',
   installOk: 'Install',
@@ -636,6 +644,27 @@ function usageText(s, t) {
   if (typeof s.tokens === 'number') return t('usageStat', { tokens: s.tokens, chars: s.chars ?? (s.description || '').length })
   if (typeof s.chars === 'number') return t('usageCharsOnly', { chars: s.chars })
   return null
+}
+
+/** MarkdownText 的 labels（宿主 .d.ts 里是必填）：围栏代码块的复制/换行
+ *  工具条与脚注小节标题。不传时宿主渲染到第一个 ``` 围栏就在
+ *  labels.code.copyLabel 上读 undefined 抛 TypeError，宿主错误边界随即把
+ *  整个 settings.section 卸载——详情弹窗一点就白屏的根因。宿主要求引用
+ *  稳定（按 locale 记忆化），调用方以 useMemo 包住、依赖取具体文案，
+ *  语言切换时对象自然换新。 */
+function markdownLabels(t) {
+  return {
+    code: {
+      copyLabel: t('copy'),
+      copiedLabel: t('copied'),
+      toolbarLabels: {
+        codeLabel: t('mdCodeLabel'),
+        wrapLabel: t('mdCodeWrap'),
+        unwrapLabel: t('mdCodeUnwrap'),
+      },
+    },
+    footnotes: t('mdFootnotes'),
+  }
 }
 
 /** 卡片排序：缺 token/chars 的行（预热未完成或降级模式）永远沉底，
@@ -942,6 +971,8 @@ function DetailModal({ sel, executors, t, onClose, onInstalled, onDeleted }) {
 
   const files = data?.files || []
   const isMd = file ? file.path.endsWith('.md') : true
+  const mdLabels = useMemo(() => markdownLabels(t),
+    [t('copy'), t('copied'), t('mdCodeLabel'), t('mdCodeWrap'), t('mdCodeUnwrap'), t('mdFootnotes')])
 
   return h('div', null,
     h(SkDialog, { title: shortName(sel.name), onClose, wide: true },
@@ -974,11 +1005,11 @@ function DetailModal({ sel, executors, t, onClose, onInstalled, onDeleted }) {
                       h('span', { className: 'sk-dir' }, formatSize(f.size))))),
                   h('div', { className: 'sk-preview sk-md' },
                     isMd && prim('MarkdownText')
-                      ? h(P.MarkdownText, { text: file ? fileText : (data?.content || '') })
+                      ? h(P.MarkdownText, { text: file ? fileText : (data?.content || ''), labels: mdLabels })
                       : h('pre', { style: { whiteSpace: 'pre-wrap', margin: 0, fontFamily: 'var(--dsw-font-family)' } }, file ? fileText : (data?.content || ''))))
               : h('div', { className: 'sk-preview sk-md' },
                   prim('MarkdownText')
-                    ? h(P.MarkdownText, { text: data?.content || '' })
+                    ? h(P.MarkdownText, { text: data?.content || '', labels: mdLabels })
                     : h('pre', { style: { whiteSpace: 'pre-wrap', margin: 0 } }, data?.content || '')))),
     confirming && h(SkDialog, {
       title: t('deleteTitle'),
@@ -1712,7 +1743,7 @@ const CLIENT_NAME = '@weibaohui/skills-management'
 module.exports = {
   name: CLIENT_NAME,
   inject: ['slots', 'locale'],
-  __internals: { NS, ZH, EN, matchSkill, formatSize, formatTime, usageText, sortSkills, gradient, shortName, isInstalledRow, patchMarketInstalled, openTriggerSource, insertComposerText, fetchSkillCandidates },
+  __internals: { NS, ZH, EN, matchSkill, formatSize, formatTime, usageText, markdownLabels, sortSkills, gradient, shortName, isInstalledRow, patchMarketInstalled, openTriggerSource, insertComposerText, fetchSkillCandidates },
   /** Test/host helper: mount a standalone page into any container. */
   __boot(container, opts = {}) {
     ensureStyles()

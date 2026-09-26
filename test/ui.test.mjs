@@ -269,6 +269,33 @@ test('openTriggerSource toggles via sessionOf with a synthetic end-of-draft span
   assert.equal(openTriggerSource({ sessions: { scope: () => undefined }, inputTriggers: { sessionOf: () => ({}) } }, 's', {}, 'skill'), false)
 })
 
+test('MarkdownText mounts always carry the required labels prop', () => {
+  // Regression: the 0.1.7 web frontend made MarkdownText's `labels` a required
+  // prop (MarkdownLabels in dsh-client-ui-primitives). The detail modal passed
+  // only { text }, so the first fenced code block in a SKILL.md read
+  // labels.code.copyLabel of undefined and threw inside the host component's
+  // useMemo — the host error boundary then unmounted the whole
+  // settings.section slot: tapping a skill card blanked the panel.
+  const { markdownLabels, ZH, EN } = plugin.__internals
+  for (const dict of [ZH, EN]) {
+    const labels = markdownLabels((key) => dict[key] ?? key)
+    assert.equal(typeof labels.code.copyLabel, 'string')
+    assert.equal(typeof labels.code.copiedLabel, 'string')
+    assert.equal(typeof labels.code.toolbarLabels.codeLabel, 'string')
+    assert.equal(typeof labels.code.toolbarLabels.wrapLabel, 'string')
+    assert.equal(typeof labels.code.toolbarLabels.unwrapLabel, 'string')
+    assert.equal(typeof labels.footnotes, 'string')
+  }
+  const labels = markdownLabels((key) => EN[key] ?? key)
+  assert.equal(labels.code.copyLabel, EN.copy)
+  assert.equal(labels.footnotes, EN.mdFootnotes)
+
+  const src = readFileSync(new URL('../client/index.js', import.meta.url), 'utf8')
+  const callSites = src.match(/h\(P\.MarkdownText, \{ text: [^}]*\}\)/g) || []
+  assert.equal(callSites.length, 2, 'both MarkdownText call sites accounted for')
+  for (const site of callSites) assert.ok(site.includes('labels: mdLabels'), `labels passed: ${site}`)
+})
+
 // ── 注入开销文案与排序（纯 helper）────────────────────────────────────────
 
 test('usageText renders tokens first, degrades to chars, hides on legacy rows', () => {

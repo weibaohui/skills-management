@@ -44,9 +44,10 @@ dsh plugin --profile web add @weibaohui/skills-management -w
 
 | 插件版本 | 适配 dsh 版本 | 备注 |
 |---------|--------------|------|
-| 0.6.7 | 0.1.7-rc.2 | 当前版本；修复 schemastery 加载失败时 `Config` 导出 null 导致宿主 settings/describe 崩溃、整个客户端无法启动的问题（改导出 undefined，让降级真正成立）（#12 #13） |
+| 0.6.8 | 0.1.7-rc.2 | 当前版本；修复详情弹窗白屏：0.1.7-rc.2 web 前端的 `MarkdownText` 将 `labels` 变为必填，未传时渲染到首个代码围栏即抛 TypeError，宿主错误边界卸载整个 settings.section |
+| 0.6.7 | 0.1.7-rc.2 | 修复 schemastery 加载失败时 `Config` 导出 null 导致宿主 settings/describe 崩溃、整个客户端无法启动的问题（改导出 undefined，让降级真正成立）（#12 #13） |
 | 0.6.6 | 0.1.7-rc.2 | 修复宿主将 volatile 字段物化为 {} 导致的设置毒化（saneConfigValues 清洗 + 移除 Config 兼容字符串字段） |
-| 0.6.5 | 0.1.7-rc.2 | 当前版本；适配 0.1.7 settings 模型（导出 volatile `Config`，`ctx.settings.update` 持久化），面板改动重启不再丢失 |
-| 0.6.3 | 0.1.7-rc.2 | 当前版本，已在 @deepseek-ai/dsh@0.1.7-rc.2 下验证运行 |
+| 0.6.5 | 0.1.7-rc.2 | 适配 0.1.7 settings 模型（导出 volatile `Config`，`ctx.settings.update` 持久化），面板改动重启不再丢失 |
+| 0.6.3 | 0.1.7-rc.2 | 已在 @deepseek-ai/dsh@0.1.7-rc.2 下验证运行 |
 
 > **发版约定**：每次发布新版本时，请在上表追加一行，记录该插件版本实际验证所用的 `@deepseek-ai/dsh` 版本。`package.json` 的 `engines.dsh` 声明最低支持版本；本表记录实际验证版本，二者配合使用。
