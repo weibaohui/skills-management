@@ -44,7 +44,8 @@ dsh plugin --profile web add @weibaohui/skills-management -w
 
 | 插件版本 | 适配 dsh 版本 | 备注 |
 |---------|--------------|------|
-| 0.6.6 | 0.1.7-rc.2 | 当前版本；修复宿主将 volatile 字段物化为 {} 导致的设置毒化（saneConfigValues 清洗 + 移除 Config 兼容字符串字段） |
+| 0.6.7 | 0.1.7-rc.2 | 当前版本；修复 schemastery 加载失败时 `Config` 导出 null 导致宿主 settings/describe 崩溃、整个客户端无法启动的问题（改导出 undefined，让降级真正成立）（#12 #13） |
+| 0.6.6 | 0.1.7-rc.2 | 修复宿主将 volatile 字段物化为 {} 导致的设置毒化（saneConfigValues 清洗 + 移除 Config 兼容字符串字段） |
 | 0.6.5 | 0.1.7-rc.2 | 当前版本；适配 0.1.7 settings 模型（导出 volatile `Config`，`ctx.settings.update` 持久化），面板改动重启不再丢失 |
 | 0.6.3 | 0.1.7-rc.2 | 当前版本，已在 @deepseek-ai/dsh@0.1.7-rc.2 下验证运行 |
 
