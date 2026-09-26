@@ -120,17 +120,34 @@ function openTriggerSource(scope, sessionId, input, sourceName) {
 function insertComposerText(scope, sessionId, input, text) {
   const sessions = scope && scope.sessions
   if (!sessions) return false
-  let actx
-  try { actx = sessions.scope(sessionId) } catch { return false }
-  if (actx === undefined || actx === null || typeof actx.bail !== 'function') return false
   const draft = (input && input.draft) || ''
   const at = draft.length
-  try {
-    return actx.bail(actx, 'slash/input-insert-text', {
-      text,
-      span: { start: at, end: at, draftRev: (input && input.draftRev) || 0 },
-    }) === true
-  } catch { return false }
+  const payload = { text, span: { start: at, end: at, draftRev: (input && input.draftRev) || 0 } }
+  // dsh ≤0.1.6：sessions.scope(id) 直接返回会话的 cordis ctx。
+  if (typeof sessions.scope === 'function') {
+    let actx
+    try { actx = sessions.scope(sessionId) } catch { return false }
+    if (actx === undefined || actx === null || typeof actx.bail !== 'function') return false
+    try {
+      return actx.bail(actx, 'slash/input-insert-text', payload) === true
+    } catch { return false }
+  }
+  // dsh 0.1.7+：scope() 移除，会话 ctx 经 using 的 reference.binding.ctx 取得
+  // （ui-commands 的 PopupSelectController 同款）。using 异步打开会话后再回调，
+  // 调用方本就不消费返回值（fire-and-forget + close + refocus）。
+  if (typeof sessions.using === 'function') {
+    try {
+      const p = sessions.using(sessionId, { source: 'skillsComposer' }, (reference) => {
+        const actx = reference && reference.binding && reference.binding.ctx
+        if (actx && typeof actx.bail === 'function') {
+          actx.bail(actx, 'slash/input-insert-text', payload)
+        }
+      })
+      if (p && typeof p.catch === 'function') p.catch(() => {})
+      return true
+    } catch { return false }
+  }
+  return false
 }
 
 /** Best-effort refocus of the composer textarea after the picker closes. */
@@ -1779,6 +1796,14 @@ module.exports = {
         ctx.inject(['sessions'], (scope) => {
           const svc = scope && scope.sessions
           if (svc && typeof svc.open === 'function') sessionsApi = svc
+        })
+        // dsh 0.1.7+: sessions.open() 被移除，会话导航改走
+        // uiWorkspace.openSession()。归一成 { open(id) } 面孔，调用点不变。
+        ctx.inject(['uiWorkspace'], (scope) => {
+          const svc = scope && scope.uiWorkspace
+          if (svc && typeof svc.openSession === 'function' && !sessionsApi) {
+            sessionsApi = { open: (id) => svc.openSession(id) }
+          }
         })
       }
     } catch {}
