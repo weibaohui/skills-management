@@ -115,8 +115,8 @@ function parseSkillMd(content) {
   return { meta, body }
 }
 
-function buildEntry(root, dir, stat) {
-  return { root, dir, relPath: relative(root, dir).split(sep).join('/'), stat }
+function buildEntry(root, dir, stat, linkTarget) {
+  return { root, dir, relPath: relative(root, dir).split(sep).join('/'), stat, isLink: linkTarget !== undefined, linkTarget }
 }
 
 async function scanSkillDirs(root, current, out, visited) {
@@ -128,8 +128,15 @@ async function scanSkillDirs(root, current, out, visited) {
     const dir = join(current, entry.name)
     // Follow symlinks: executor skills dirs routinely symlink entries from a
     // shared pool (~/.agents/skills); Dirent.isDirectory() would miss them.
-    let dirStat
-    try { dirStat = await fsP.stat(dir) } catch { continue }
+    // lstat first so the entry can carry its linked-ness (UI marks such skills
+    // as virtual); non-links reuse the lstat result and skip the second stat.
+    let lst
+    try { lst = await fsP.lstat(dir) } catch { continue }
+    const linked = lst.isSymbolicLink()
+    let dirStat = lst
+    if (linked) {
+      try { dirStat = await fsP.stat(dir) } catch { continue }
+    }
     if (!dirStat.isDirectory()) continue
     let real
     try { real = await fsP.realpath(dir) } catch { continue }
@@ -137,7 +144,7 @@ async function scanSkillDirs(root, current, out, visited) {
     visited.add(real)
     let hasSkillMd = false, skillMdStat
     try { skillMdStat = await fsP.stat(join(dir, 'SKILL.md')); hasSkillMd = skillMdStat.isFile() } catch { hasSkillMd = false }
-    if (hasSkillMd) { out.push(buildEntry(root, dir, skillMdStat)) }
+    if (hasSkillMd) { out.push(buildEntry(root, dir, skillMdStat, linked ? real : undefined)) }
     else { await scanSkillDirs(root, dir, out, visited) }
   }
 }
@@ -695,6 +702,33 @@ module.exports = {
     }
 
     /**
+     * 链接来源标注：技能目录是软链接时，把 realpath 目标匹配到某个执行器根
+     * （最长前缀胜出），命中则给出该来源的 label（如 Agents），前端以此显示
+     * 「链接 → Agents」而不是一串裸路径。执行器根先做 realpath——macOS 的
+     * /var→/private/var 这类前缀软链接会让裸字符串比较失手。目标不在任何
+     * 已知根内时返回 undefined，前端退回显示折叠后的目标路径。
+     */
+    const rootRealMemo = new Map()
+    const realRoot = async (p) => {
+      if (!rootRealMemo.has(p)) rootRealMemo.set(p, await fsP.realpath(p).catch(() => p))
+      return rootRealMemo.get(p)
+    }
+    const linkExecutorLabel = async (target) => {
+      let best
+      for (const r of computeExecutorRows()) {
+        if (typeof r.root !== 'string' || r.root === '') continue
+        const rp = await realRoot(resolve(r.root))
+        if (target !== rp && !target.startsWith(rp + sep)) continue
+        if (best === undefined || rp.length > best.rp.length) best = { rp, label: r.label }
+      }
+      return best ? best.label : undefined
+    }
+    /** 列表/详情共用的链接字段包；非链接返回空对象（JSON 里不出现这些键）。 */
+    const linkFields = async (isLink, target) => isLink === true && typeof target === 'string'
+      ? { isLink: true, linkTarget: displayPath(target), linkExecutor: await linkExecutorLabel(target) }
+      : {}
+
+    /**
      * One executor row → summary + flat skill list (ntd `discover_skills_for`).
      * With `countsOnly` the expensive per-skill dir walks are skipped and
      * `skills` stays undefined — callers get `skillCount` only.
@@ -713,7 +747,7 @@ module.exports = {
           summary.skillCount += 1
           if (countsOnly) continue
           const { fileCount, totalSize } = await countFilesAndSize(entry.dir)
-          summary.skills.push({ name: listed, relPath: entry.relPath, description: truncateDescription(read.description), keywords: read.keywords, version: read.version, author: read.author, fileCount, totalSize, modifiedAt: read.modifiedAt, modelInvocable: invocationPolicy(read.meta).modelInvocable, ...usageStat(listed, read.description) })
+          summary.skills.push({ name: listed, relPath: entry.relPath, description: truncateDescription(read.description), keywords: read.keywords, version: read.version, author: read.author, fileCount, totalSize, modifiedAt: read.modifiedAt, modelInvocable: invocationPolicy(read.meta).modelInvocable, ...(await linkFields(entry.isLink, entry.linkTarget)), ...usageStat(listed, read.description) })
         } catch (e) { ctx.logger.warn(`skills-management: skipping ${entry.dir}: ${e && e.message}`) }
       }
       if (summary.skills !== undefined) {
@@ -1229,7 +1263,13 @@ module.exports = {
             const { fileCount, totalSize } = await countFilesAndSize(located.dir)
             const { meta, body } = parseSkillMd(content)
             const usage = usageStat(typeof meta.name === 'string' && meta.name !== '' ? meta.name : basename(name), meta.description)
-            sendJson(res, 200, { name, shortName: basename(name), dir: displayPath(located.dir), executor: located.executorKey, isInstalled: located.isInstalled, content: body, contentWithMeta: content, meta, files, fileCount, totalSize, modifiedAt: files[0]?.modifiedAt, ...usage })
+            // 详情同样标注软链接（列表行经 scanRoot 自带；这里按定位到的目录现查）
+            let linked = false, linkReal
+            try {
+              const lst = await fsP.lstat(located.dir)
+              if (lst.isSymbolicLink()) { linked = true; linkReal = await fsP.realpath(located.dir) }
+            } catch {}
+            sendJson(res, 200, { name, shortName: basename(name), dir: displayPath(located.dir), executor: located.executorKey, isInstalled: located.isInstalled, ...(await linkFields(linked, linkReal)), content: body, contentWithMeta: content, meta, files, fileCount, totalSize, modifiedAt: files[0]?.modifiedAt, ...usage })
             return
           }
 

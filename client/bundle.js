@@ -558,6 +558,8 @@ window.__ModuleLoader__.load({
       sortTokensDesc: 'token 高→低',
       sortTokensAsc: 'token 低→高',
       sortCharsDesc: '字符 多→少',
+      linkTag: '链接',
+      linkTargetLabel: '链接目标',
     }
 
     const EN = {
@@ -706,6 +708,8 @@ window.__ModuleLoader__.load({
       sortTokensDesc: 'tokens high→low',
       sortTokensAsc: 'tokens low→high',
       sortCharsDesc: 'chars high→low',
+      linkTag: 'link',
+      linkTargetLabel: 'Link target',
     }
 
     // ── Pure helpers ────────────────────────────────────────────────────────
@@ -872,9 +876,11 @@ window.__ModuleLoader__.load({
     .sk-tag.ok{color:var(--dsw-alias-state-success-primary);border-color:var(--dsw-alias-state-success-primary)}
     .sk-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
     .sk-src{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px}
-    .sk-card{display:flex;flex-direction:column;gap:10px;padding:16px;border-radius:12px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);cursor:pointer;text-align:left}
-    .sk-card:hover{border-color:var(--dsw-alias-border-l3);background:var(--dsw-alias-interactive-bg-hover)}
-    .sk-card.missing{opacity:.5;cursor:default}
+    	.sk-card{display:flex;flex-direction:column;gap:10px;padding:16px;border-radius:12px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);cursor:pointer;text-align:left}
+    	.sk-card:hover{border-color:var(--dsw-alias-border-l3);background:var(--dsw-alias-interactive-bg-hover)}
+    	.sk-card.link{border-style:dashed;border-color:var(--dsw-alias-border-l3);background:linear-gradient(var(--dsw-alias-interactive-bg-active),var(--dsw-alias-interactive-bg-active)),var(--dsw-alias-bg-layer-1)}
+    	.sk-card.link:hover{border-color:var(--dsw-alias-border-l3);background:linear-gradient(var(--dsw-alias-interactive-bg-active),var(--dsw-alias-interactive-bg-active)),var(--dsw-alias-bg-layer-1)}
+    	.sk-card.missing{opacity:.5;cursor:default}
     .sk-avatar.sq{border-radius:12px}
     .sk-avatar{width:42px;height:42px;border-radius:11px;display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--dsw-alias-label-primary-inverted,#fff);font-size:17px;flex:none}
     .sk-title{font-weight:600;word-break:break-all}
@@ -943,8 +949,8 @@ window.__ModuleLoader__.load({
 
     // ── Small building blocks ────────────────────────────────────────────────
 
-    const Tag = ({ tone, children }) =>
-      h('span', { className: 'sk-tag' + (tone ? ' ' + tone : '') }, children)
+    const Tag = ({ tone, children, ...rest }) =>
+      h('span', { className: 'sk-tag' + (tone ? ' ' + tone : ''), ...rest }, children)
 
     const Spinner = ({ label }) =>
       h('div', { className: 'sk-loading' },
@@ -992,7 +998,7 @@ window.__ModuleLoader__.load({
       const name = shortName(s.name)
       const usage = usageText(s, t)
       const installed = isInstalledRow(s)
-      return h('div', { className: 'sk-card', role: 'button', tabIndex: 0,
+      return h('div', { className: 'sk-card' + (s.isLink ? ' link' : ''), role: 'button', tabIndex: 0,
           onClick: () => onOpen(s),
           onKeyDown: e => e.key === 'Enter' && onOpen(s) },
         h('div', { style: { display: 'flex', gap: 12, alignItems: 'center' } },
@@ -1005,6 +1011,10 @@ window.__ModuleLoader__.load({
         h('div', { className: 'sk-foot' },
           h('div', { className: 'sk-chips' },
             h(Tag, null, row.label),
+            // 软链接技能是「虚」的：虚线边框之外再标来源——命中已知执行器根显示其
+            // 名称（Agents），否则显示折叠后的目标路径；完整路径放悬停提示。
+            s.isLink && h(Tag, { tone: 'accent', title: s.linkTarget || '' },
+              `↪ ${t('linkTag')} → ${s.linkExecutor || s.linkTarget || ''}`),
             row.readOnly && h(Tag, { tone: 'danger' }, t('readOnlyTag')),
             s.version && h(Tag, { tone: 'accent' }, 'v' + s.version),
             installed && h(Tag, { tone: 'ok' }, t('installedTag')),
@@ -1156,6 +1166,7 @@ window.__ModuleLoader__.load({
                   row && !row.readOnly && h(P.Button, { variant: 'outline', size: 'sm', onClick: () => setConfirming(true) }, t('deleteBtn'))),
                 h('div', { className: 'sk-meta' },
                   h('div', null, h('div', { className: 'sk-dir' }, t('pathLabel')), h('div', { className: 'sk-hint' }, data?.dir || '-')),
+                  data?.isLink && h('div', null, h('div', { className: 'sk-dir' }, t('linkTargetLabel')), h('div', { className: 'sk-hint', style: { wordBreak: 'break-all' } }, (data.linkExecutor ? data.linkExecutor + ' · ' : '') + (data.linkTarget || ''))),
                   h('div', null, h('div', { className: 'sk-dir' }, t('filesCount', { n: data?.fileCount ?? 0 })), h('div', { className: 'sk-hint' }, formatSize(data?.totalSize || 0))),
                   data && usageText(data, t) && h('div', null, h('div', { className: 'sk-dir' }, t('usageMetaLabel')), h('div', { className: 'sk-hint', title: t('usageHint') }, usageText(data, t))),
                   meta.version && h('div', null, h('div', { className: 'sk-dir' }, 'Version'), h('div', { className: 'sk-hint' }, 'v' + meta.version)),

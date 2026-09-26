@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, writeFile, rm, stat, readFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, rm, stat, readFile, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { EventEmitter } from 'node:events'
@@ -307,6 +307,49 @@ test('GET /executors groups skills per on-machine source', async () => {
 
     const missing = rows.find((r) => r.key === 'codex') // no override, real ~/.codex may exist; only shape-check
     assert.equal(typeof missing.dirExists, 'boolean')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('symlinked skill dirs are flagged with link target and owning source', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skills-link-'))
+  try {
+    // 真实场景复刻（~/.claude/skills 过半条目链进 ~/.agents/skills 共享池）：
+    // cc 下一个链接技能 + 一个实体技能，链接目标落在 agents 根内
+    await writeSkill(join(root, 'ag'), 'pool-skill', { name: 'pool-skill', description: 'living in the agents pool' })
+    await mkdir(join(root, 'cc'), { recursive: true })
+    await symlink(join(root, 'ag', 'pool-skill'), join(root, 'cc', 'pool-skill'), 'dir')
+    await writeSkill(join(root, 'cc'), 'real-one', { name: 'real-one', description: 'a real dir' })
+
+    const env = setupPlugin({
+      marketDirs: [join(root, 'market')],
+      installedDir: join(root, 'installed'),
+      executorDirs: { claudecode: join(root, 'cc'), agents: join(root, 'ag') },
+    })
+    const res = await env.call('GET', '/skills-management/api/executors?executor=claudecode')
+    assert.equal(res.status, 200)
+    const skills = res.payload.executor.skills
+    const linked = skills.find((s) => s.name === 'pool-skill')
+    assert.equal(linked.isLink, true)
+    assert.ok(linked.linkTarget.endsWith(join('ag', 'pool-skill')), `linkTarget should name the pool dir, got ${linked.linkTarget}`)
+    assert.equal(linked.linkExecutor, 'Agents') // realpath 前缀命中最长根 → 来源 label
+    const real = skills.find((s) => s.name === 'real-one')
+    assert.equal(real.isLink, undefined) // 非链接行不带这些键
+
+    // 链接不影响内容读取（stat 跟随）
+    assert.equal(linked.description, 'living in the agents pool')
+
+    // 详情接口带同样的链接字段
+    const detail = await env.call('GET', '/skills-management/api/detail?name=pool-skill&executor=claudecode')
+    assert.equal(detail.status, 200)
+    assert.equal(detail.payload.isLink, true)
+    assert.equal(detail.payload.linkExecutor, 'Agents')
+    assert.ok(detail.payload.linkTarget.endsWith(join('ag', 'pool-skill')))
+
+    // agents 根里的实体同名技能不是链接
+    const agRes = await env.call('GET', '/skills-management/api/executors?executor=agents')
+    assert.equal(agRes.payload.executor.skills[0].isLink, undefined)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
