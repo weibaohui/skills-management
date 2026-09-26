@@ -5,7 +5,7 @@
 
 **技能市场插件**：一个页面管理本机所有 coding agent 的技能，还能浏览安装 6600+ 的 ntd 技能市场。
 
-![技能市场：从本机技能浏览到 ntd 市场安装，卡片带 ≈token/字符 注入开销统计与排序](docs/demo.gif)
+![技能市场：从本机技能浏览到 ntd 市场安装，卡片带 ≈token/字符 注入开销统计与排序](https://raw.githubusercontent.com/weibaohui/skills-management/main/docs/demo.gif)
 
 ## 核心功能
 
