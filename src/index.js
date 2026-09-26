@@ -557,7 +557,7 @@ function contentTypeFor(p) {
 
 module.exports = {
   name: 'skills-management',
-  Config,
+  Config: Config ?? undefined,
   inject: ['skills', 'webServer', 'settings', 'agents', 'agentDefaultModel', 'sessions', 'connection'],
   __internals: { extractFrontmatter, parseSkillMd, invocationPolicy, installDirName, EXECUTOR_DEFS, usageStat, usageMemo, setUsageEncoderOverride: (v) => { usageEncoderOverride = v } },
 
