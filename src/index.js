@@ -481,6 +481,154 @@ async function atomicWriteJs(file, content) {
   await fsP.rename(temp, file)
 }
 
+// ── 回收站（删除暂存）───────────────────────────────────────────────
+// 删除 = 移入 <dshHome>/skills-management/trash/（与所有被扫描的技能根平级，
+// 不会被扫回）。每个回收项是一对：trash/<id>/（技能目录本体）+ trash/<id>.json
+// （元数据：原名/来源 key/原始绝对路径/删除时间——恢复按原始路径放回，
+// 兼容目录名≠frontmatter 名的布局）。同盘 rename 秒移；跨盘（EXDEV，
+// Windows 上技能在 D:\ 而回收站在 C:\Users\…）降级复制+删除；软链技能
+// 移的是链接本身，目标池不受影响。
+const DEFAULT_TRASH_RETENTION_DAYS = 30 // 惰性清理：启动时 + 读回收站列表时
+
+function trashSlug(name) {
+  return String(name).replace(/\//g, '--').replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 60) || 'skill'
+}
+
+function validTrashId(id) {
+  return typeof id === 'string' && id !== '' && id.length <= 200 && !id.includes('/') && !id.includes('\\') && !id.includes('..')
+}
+
+async function pathExists(p) {
+  try { await fsP.access(p); return true } catch { return false }
+}
+
+/** rename 优先；EXDEV 跨设备降级为复制+删除（软链重建链接，不物化目标）。 */
+async function movePath(src, dst) {
+  try { await fsP.rename(src, dst); return }
+  catch (e) { if (!e || e.code !== 'EXDEV') throw e }
+  const lst = await fsP.lstat(src)
+  if (lst.isSymbolicLink()) {
+    const target = await fsP.readlink(src)
+    await fsP.symlink(target, dst, process.platform === 'win32' ? 'junction' : 'dir')
+    await fsP.rm(src)
+  } else if (lst.isDirectory()) {
+    await copyDir(src, dst)
+    await fsP.rm(src, { recursive: true })
+  } else {
+    await fsP.copyFile(src, dst)
+    await fsP.rm(src)
+  }
+}
+
+async function uniqueTrashId(trashDir, base) {
+  for (let id = base, n = 2; ; id = `${base}-${n}`, n += 1) {
+    if (!(await pathExists(join(trashDir, id))) && !(await pathExists(join(trashDir, id + '.json')))) return id
+  }
+}
+
+/** 技能目录移入回收站。先写元数据再移动：移动失败不留孤儿目录（元数据回滚）。 */
+async function moveToTrash(trashDir, sourceDir, name, executorKey) {
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-')
+  const id = await uniqueTrashId(trashDir, `${stamp}-${executorKey}-${trashSlug(name)}`)
+  const meta = { id, name, executorKey, originalDir: sourceDir, deletedAt: new Date().toISOString() }
+  await fsP.mkdir(trashDir, { recursive: true })
+  await fsP.writeFile(join(trashDir, id + '.json'), JSON.stringify(meta, null, 2), 'utf8')
+  try {
+    await movePath(sourceDir, join(trashDir, id))
+  } catch (e) {
+    await fsP.rm(join(trashDir, id + '.json'), { force: true }).catch(() => {})
+    throw e
+  }
+  return meta
+}
+
+async function readTrashMeta(trashDir, id) {
+  try {
+    const parsed = JSON.parse(await fsP.readFile(join(trashDir, id + '.json'), 'utf8'))
+    return parsed !== null && typeof parsed === 'object' ? parsed : null
+  } catch { return null }
+}
+
+async function listTrash(trashDir) {
+  let entries
+  try { entries = await fsP.readdir(trashDir, { withFileTypes: true }) } catch { return [] }
+  const out = []
+  for (const entry of entries) {
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
+    const id = entry.name
+    const meta = await readTrashMeta(trashDir, id)
+    let description = ''
+    try { description = parseSkillMd(await fsP.readFile(join(trashDir, id, 'SKILL.md'), 'utf8')).meta.description || '' } catch {}
+    const { fileCount, totalSize } = await countFilesAndSize(join(trashDir, id)).catch(() => ({ fileCount: 0, totalSize: 0 }))
+    out.push({
+      id,
+      name: meta !== null && typeof meta.name === 'string' ? meta.name : id,
+      executorKey: meta !== null && typeof meta.executorKey === 'string' ? meta.executorKey : '',
+      originalDir: meta !== null && typeof meta.originalDir === 'string' ? meta.originalDir : '',
+      deletedAt: meta !== null && typeof meta.deletedAt === 'string' ? meta.deletedAt : undefined,
+      description: truncateDescription(description),
+      fileCount, totalSize,
+      // 元数据缺失（移动中途崩溃的残骸）只能彻底删除，无法恢复
+      restorable: meta !== null && typeof meta.originalDir === 'string' && meta.originalDir !== '',
+    })
+  }
+  out.sort((a, b) => String(b.deletedAt || '').localeCompare(String(a.deletedAt || ''))) // 新删的在前
+  return out
+}
+
+/** 恢复回收项到原始目录。原位置已被占用时拒绝（用户可选择彻底删除回收项）。 */
+async function restoreTrashEntry(trashDir, id) {
+  if (!validTrashId(id)) throw new Error('invalid trash id')
+  const meta = await readTrashMeta(trashDir, id)
+  if (meta === null) throw new Error(`trash entry '${id}' has no metadata; it cannot be restored`)
+  if (typeof meta.originalDir !== 'string' || meta.originalDir === '') throw new Error('trash metadata missing originalDir')
+  if (!(await pathExists(join(trashDir, id)))) throw new Error(`trash entry '${id}' not found`)
+  if (await pathExists(meta.originalDir)) throw new Error(`restore target already exists: ${displayPath(meta.originalDir)}`)
+  await fsP.mkdir(join(meta.originalDir, '..'), { recursive: true })
+  await movePath(join(trashDir, id), meta.originalDir)
+  await fsP.rm(join(trashDir, id + '.json'), { force: true })
+  return { id, name: meta.name, executorKey: meta.executorKey, dir: meta.originalDir }
+}
+
+async function deleteTrashEntry(trashDir, id) {
+  if (!validTrashId(id)) throw new Error('invalid trash id')
+  if (!(await pathExists(join(trashDir, id))) && !(await pathExists(join(trashDir, id + '.json')))) throw new Error(`trash entry '${id}' not found`)
+  await fsP.rm(join(trashDir, id), { recursive: true, force: true })
+  await fsP.rm(join(trashDir, id + '.json'), { force: true })
+  return { deleted: id }
+}
+
+async function emptyTrash(trashDir) {
+  let entries
+  try { entries = await fsP.readdir(trashDir) } catch { return { emptied: 0 } }
+  let emptied = 0
+  for (const name of entries) {
+    await fsP.rm(join(trashDir, name), { recursive: true, force: true }).catch(() => {})
+    emptied += 1
+  }
+  return { emptied }
+}
+
+/** 保留期清理：目录与配对 json 都以元数据 deletedAt 为准（缺失退回 mtime）。 */
+async function purgeTrash(trashDir, retentionDays) {
+  if (!Number.isFinite(retentionDays) || retentionDays <= 0) return { purged: 0 }
+  const cutoff = Date.now() - retentionDays * 24 * 3600 * 1000
+  let entries
+  try { entries = await fsP.readdir(trashDir) } catch { return { purged: 0 } }
+  let purged = 0
+  for (const name of entries) {
+    const id = name.endsWith('.json') ? name.slice(0, -5) : name
+    let when = 0
+    const meta = await readTrashMeta(trashDir, id)
+    if (meta !== null && typeof meta.deletedAt === 'string') when = Date.parse(meta.deletedAt) || 0
+    if (!when) { try { when = (await fsP.lstat(join(trashDir, name))).mtimeMs } catch { continue } }
+    if (when > cutoff) continue
+    await fsP.rm(join(trashDir, name), { recursive: true, force: true }).catch(() => {})
+    purged += 1
+  }
+  return { purged }
+}
+
 // ── Market git sync (ntd git_sync semantics: clone --depth 1 first, then
 // fetch + reset --hard so the remote always wins and local damage heals) ──
 
@@ -635,7 +783,7 @@ module.exports = {
   name: 'skills-management',
   Config: Config ?? undefined,
   inject: ['skills', 'webServer', 'settings', 'agents', 'agentDefaultModel', 'sessions', 'connection'],
-  __internals: { extractFrontmatter, parseSkillMd, invocationPolicy, installDirName, EXECUTOR_DEFS, usageStat, usageMemo, setUsageEncoderOverride: (v) => { usageEncoderOverride = v }, discoverSkillHomes, deriveAutoExecutors, keyFromDotDir },
+  __internals: { extractFrontmatter, parseSkillMd, invocationPolicy, installDirName, EXECUTOR_DEFS, usageStat, usageMemo, setUsageEncoderOverride: (v) => { usageEncoderOverride = v }, discoverSkillHomes, deriveAutoExecutors, keyFromDotDir, moveToTrash, listTrash, restoreTrashEntry, purgeTrash, validTrashId },
 
   apply(ctx, config = {}) {
     // Explicit marketDirs config wins; otherwise the scan follows the
@@ -948,13 +1096,26 @@ module.exports = {
       if (row.readOnly) throw new Error(`source '${key}' is read-only; cannot delete skills there`)
       const target = await resolveSkillDirByName(row.root, name)
       if (target === undefined) throw new Error(`skill '${name}' not found in ${row.label} (${row.key})`)
-      await fsP.rm(target, { recursive: true })
+      // 删除 = 移入回收站（可恢复/彻底删除）；config.trash === false 恢复旧的永久删除
+      const meta = trashEnabled
+        ? await moveToTrash(trashDir, target, name, row.key)
+        : (await fsP.rm(target, { recursive: true }), null)
       if (key === 'dsh') invalidate()
-      return { removed: name, executor: key }
+      return meta !== null ? { removed: name, executor: key, trashId: meta.id } : { removed: name, executor: key }
     }
 
     // ── Market sync state (persisted next to the repo root) ──
     const marketStateFile = join(resolve(installedDir, '..'), 'skills-market-sync.json')
+    // 回收站：默认 <installedDir>/../skills-management/trash（与所有被扫描根平级）。
+    // config.trashDir 覆盖；config.trashRetentionDays 保留天数（默认 30，0/null = 永久保留）；
+    // config.trash === false 整体关闭（退回永久删除）。
+    const trashEnabled = config.trash !== false
+    const trashDir = config.trashDir !== undefined
+      ? resolve(expandTilde(String(config.trashDir)))
+      : join(resolve(installedDir, '..'), 'skills-management', 'trash')
+    const trashRetentionDays = config.trashRetentionDays === null || config.trashRetentionDays === 0
+      ? Infinity
+      : (typeof config.trashRetentionDays === 'number' && config.trashRetentionDays > 0 ? config.trashRetentionDays : DEFAULT_TRASH_RETENTION_DAYS)
     let marketState = { lastSyncAt: undefined, lastResult: undefined }
     // User-facing settings live in the host settings service when present;
     // the local json only carries runtime sync bookkeeping.
@@ -1104,6 +1265,12 @@ module.exports = {
 
     // 启动即扫一次约定目录，让同步路径（linkExecutorLabel）在首个请求前就有缓存
     refreshAutoRows()
+
+    // 启动清理过期回收项（读列表时也会惰性清理）
+    ctx.effect(() => {
+      if (trashEnabled) purgeTrash(trashDir, trashRetentionDays).catch((e) => ctx.logger.warn(`skills-management: trash purge: ${e && e.message}`))
+      return () => {}
+    }, 'skills-management: trash purge')
 
     const shareRunJobs = new Map()
     // Same-process Agent services（静态注入：apply 时已就绪；动态 ctx.inject 在
@@ -1435,12 +1602,47 @@ module.exports = {
             return
           }
 
-          // DELETE /skills-management/api {name, executor?} → remove
+          // DELETE /skills-management/api {name, executor?} → 移入回收站（响应带 trashId）
           if (req.method === 'DELETE' && apiPath.endsWith('/skills-management/api')) {
             const body = await readJsonBody(req)
             await refreshAutoRows()
             if (typeof body.name !== 'string' || body.name === '') { sendJson(res, 400, { error: 'body must provide name' }); return }
             sendJson(res, 200, await deleteSkill(body.name, typeof body.executor === 'string' ? body.executor : undefined))
+            return
+          }
+
+          // GET /skills-management/api/trash → 回收站列表（先惰性清理过期项）
+          if (req.method === 'GET' && apiPath.endsWith('/skills-management/api/trash')) {
+            if (!trashEnabled) { sendJson(res, 200, { enabled: false, entries: [] }); return }
+            await purgeTrash(trashDir, trashRetentionDays)
+            const entries = await listTrash(trashDir)
+            sendJson(res, 200, {
+              enabled: true,
+              entries: entries.map((e) => ({ ...e, originalDir: e.originalDir === '' ? '' : displayPath(e.originalDir) })),
+              retentionDays: Number.isFinite(trashRetentionDays) ? trashRetentionDays : null,
+              trashDir: displayPath(trashDir),
+            })
+            return
+          }
+
+          // POST /skills-management/api/trash/restore { id } → 恢复到原始目录
+          if (req.method === 'POST' && apiPath.endsWith('/skills-management/api/trash/restore')) {
+            const body = await readJsonBody(req)
+            if (!trashEnabled) { sendJson(res, 400, { error: 'trash is disabled' }); return }
+            if (typeof body.id !== 'string' || body.id === '') { sendJson(res, 400, { error: 'body must provide id' }); return }
+            const restored = await restoreTrashEntry(trashDir, body.id)
+            if (restored.executorKey === 'dsh') invalidate() // 回库 → 注册表刷新
+            sendJson(res, 200, { restored: { ...restored, dir: displayPath(restored.dir) } })
+            return
+          }
+
+          // DELETE /skills-management/api/trash { id } 彻底删除单个；{ all: true } 清空
+          if (req.method === 'DELETE' && apiPath.endsWith('/skills-management/api/trash')) {
+            const body = await readJsonBody(req)
+            if (!trashEnabled) { sendJson(res, 400, { error: 'trash is disabled' }); return }
+            if (body.all === true) { sendJson(res, 200, await emptyTrash(trashDir)); return }
+            if (typeof body.id !== 'string' || body.id === '') { sendJson(res, 400, { error: 'body must provide id (or all: true)' }); return }
+            sendJson(res, 200, await deleteTrashEntry(trashDir, body.id))
             return
           }
 

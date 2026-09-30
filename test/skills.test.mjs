@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, writeFile, rm, stat, readFile, symlink } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, rm, stat, lstat, readFile, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { EventEmitter } from 'node:events'
@@ -878,6 +878,226 @@ test('POST /install with `from` copies an executor skill into the dsh library', 
 
     const invalidName = await env.call('POST', '/skills-management/api/install', { name: '../escape', from: 'claude' })
     assert.equal(invalidName.status, 400)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+// ── 回收站（删除暂存）──
+
+test('DELETE moves the skill into the trash; restore puts it back at the original dir', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skills-trash-'))
+  try {
+    const home = join(root, 'home')
+    await writeSkill(join(home, '.claude', 'skills'), 'gone-soon', { name: 'gone-soon', description: 'will be trashed' })
+    const env = setupPlugin({
+      marketDirs: [join(root, 'market')],
+      installedDir: join(root, 'installed'),
+      executorHomeDir: home,
+      autoDiscoverExecutors: true,
+      trashDir: join(root, 'trash'),
+    })
+
+    const del = await env.call('DELETE', '/skills-management/api', { name: 'gone-soon', executor: 'claude' })
+    assert.equal(del.status, 200)
+    assert.equal(del.payload.removed, 'gone-soon')
+    assert.equal(typeof del.payload.trashId, 'string')
+    await assert.rejects(stat(join(home, '.claude', 'skills', 'gone-soon')))
+
+    // 回收站列表：元数据完整、可恢复
+    const list = await env.call('GET', '/skills-management/api/trash')
+    assert.equal(list.status, 200)
+    assert.equal(list.payload.enabled, true)
+    assert.equal(list.payload.entries.length, 1)
+    const entry = list.payload.entries[0]
+    assert.equal(entry.id, del.payload.trashId)
+    assert.equal(entry.name, 'gone-soon')
+    assert.equal(entry.executorKey, 'claude')
+    assert.ok(entry.originalDir.endsWith(join('.claude', 'skills', 'gone-soon')))
+    assert.equal(entry.restorable, true)
+    assert.equal(entry.description, 'will be trashed')
+    assert.ok(entry.deletedAt)
+    assert.ok(entry.fileCount >= 1)
+    // 回收站目录本身不会被当成来源/技能扫回来
+    const scan = await env.call('GET', '/skills-management/api/executors?executor=claude')
+    assert.deepEqual(scan.payload.executor.skills, [])
+    assert.equal(list.payload.retentionDays, 30)
+
+    // 恢复到原始目录，回收站清空
+    const restore = await env.call('POST', '/skills-management/api/trash/restore', { id: entry.id })
+    assert.equal(restore.status, 200)
+    assert.equal(restore.payload.restored.executorKey, 'claude')
+    await stat(join(home, '.claude', 'skills', 'gone-soon', 'SKILL.md'))
+    const after = await env.call('GET', '/skills-management/api/trash')
+    assert.equal(after.payload.entries.length, 0)
+    const scan2 = await env.call('GET', '/skills-management/api/executors?executor=claude')
+    assert.deepEqual(scan2.payload.executor.skills.map((s) => s.name), ['gone-soon'])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('restore refuses when the original location is reoccupied; permanent delete then works', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skills-trashconf-'))
+  try {
+    const home = join(root, 'home')
+    await writeSkill(join(home, '.claude', 'skills'), 'clash', { name: 'clash', description: 'v1' })
+    const env = setupPlugin({
+      marketDirs: [join(root, 'market')],
+      installedDir: join(root, 'installed'),
+      executorHomeDir: home,
+      autoDiscoverExecutors: true,
+      trashDir: join(root, 'trash'),
+    })
+    const del = await env.call('DELETE', '/skills-management/api', { name: 'clash', executor: 'claude' })
+    const trashId = del.payload.trashId
+
+    // 原位置被新技能占用 → 恢复拒绝，回收项保留
+    await writeSkill(join(home, '.claude', 'skills'), 'clash', { name: 'clash', description: 'v2' })
+    const restore = await env.call('POST', '/skills-management/api/trash/restore', { id: trashId })
+    assert.equal(restore.status, 400)
+    assert.match(restore.payload.error, /already exists/)
+    assert.equal((await env.call('GET', '/skills-management/api/trash')).payload.entries.length, 1)
+
+    // 彻底删除回收项；新技能不受影响
+    const gone = await env.call('DELETE', '/skills-management/api/trash', { id: trashId })
+    assert.equal(gone.status, 200)
+    assert.equal((await env.call('GET', '/skills-management/api/trash')).payload.entries.length, 0)
+    assert.equal((await readFile(join(home, '.claude', 'skills', 'clash', 'SKILL.md'), 'utf8')).includes('v2'), true)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('trash: empty-all, invalid ids, and metadata-missing entries', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skills-trashempty-'))
+  try {
+    const home = join(root, 'home')
+    await writeSkill(join(home, '.claude', 'skills'), 'one', { name: 'one', description: 'x' })
+    await writeSkill(join(home, '.claude', 'skills'), 'two', { name: 'two', description: 'x' })
+    const env = setupPlugin({
+      marketDirs: [join(root, 'market')],
+      installedDir: join(root, 'installed'),
+      executorHomeDir: home,
+      autoDiscoverExecutors: true,
+      trashDir: join(root, 'trash'),
+    })
+    await env.call('DELETE', '/skills-management/api', { name: 'one', executor: 'claude' })
+    await env.call('DELETE', '/skills-management/api', { name: 'two', executor: 'claude' })
+    assert.equal((await env.call('GET', '/skills-management/api/trash')).payload.entries.length, 2)
+
+    // 遍历防护：id 含路径分隔符/.. 一律 400
+    for (const bad of ['../x', 'a/b', '..']) {
+      const res = await env.call('POST', '/skills-management/api/trash/restore', { id: bad })
+      assert.equal(res.status, 400, `id ${bad} rejected`)
+      assert.match(res.payload.error, /invalid trash id/)
+    }
+
+    // 清空
+    const emptied = await env.call('DELETE', '/skills-management/api/trash', { all: true })
+    assert.equal(emptied.status, 200)
+    assert.equal((await env.call('GET', '/skills-management/api/trash')).payload.entries.length, 0)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('trash retention purges expired entries lazily on list; 0 keeps forever', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skills-trashpurge-'))
+  try {
+    const home = join(root, 'home')
+    await writeSkill(join(home, '.claude', 'skills'), 'old', { name: 'old', description: 'x' })
+    const trashDir = join(root, 'trash')
+    const env = setupPlugin({
+      marketDirs: [join(root, 'market')],
+      installedDir: join(root, 'installed'),
+      executorHomeDir: home,
+      autoDiscoverExecutors: true,
+      trashDir,
+      trashRetentionDays: 30,
+    })
+    const del = await env.call('DELETE', '/skills-management/api', { name: 'old', executor: 'claude' })
+    const trashId = del.payload.trashId
+    assert.equal((await env.call('GET', '/skills-management/api/trash')).payload.entries.length, 1)
+
+    // 把删除时间改到 40 天前 → 下次列表被惰性清理
+    const metaFile = join(trashDir, trashId + '.json')
+    const meta = JSON.parse(await readFile(metaFile, 'utf8'))
+    meta.deletedAt = new Date(Date.now() - 40 * 24 * 3600 * 1000).toISOString()
+    await writeFile(metaFile, JSON.stringify(meta))
+    const list = await env.call('GET', '/skills-management/api/trash')
+    assert.equal(list.payload.entries.length, 0)
+    await assert.rejects(stat(join(trashDir, trashId)))
+
+    // retention 0 = 永久保留
+    const env2 = setupPlugin({
+      marketDirs: [join(root, 'market2')],
+      installedDir: join(root, 'installed2'),
+      executorHomeDir: home,
+      autoDiscoverExecutors: true,
+      trashDir: join(root, 'trash2'),
+      trashRetentionDays: 0,
+    })
+    await writeSkill(join(home, '.claude', 'skills'), 'keep', { name: 'keep', description: 'x' })
+    const del2 = await env2.call('DELETE', '/skills-management/api', { name: 'keep', executor: 'claude' })
+    const meta2 = JSON.parse(await readFile(join(root, 'trash2', del2.payload.trashId + '.json'), 'utf8'))
+    meta2.deletedAt = new Date(Date.now() - 400 * 24 * 3600 * 1000).toISOString()
+    await writeFile(join(root, 'trash2', del2.payload.trashId + '.json'), JSON.stringify(meta2))
+    const list2 = await env2.call('GET', '/skills-management/api/trash')
+    assert.equal(list2.payload.entries.length, 1)
+    assert.equal(list2.payload.retentionDays, null)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('deleting a symlinked skill moves only the link into trash', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skills-trashlink-'))
+  try {
+    const home = join(root, 'home')
+    await writeSkill(join(home, '.agents', 'skills'), 'pool-skill', { name: 'pool-skill', description: 'pooled' })
+    await mkdir(join(home, '.claude', 'skills'), { recursive: true })
+    await symlink(join(home, '.agents', 'skills', 'pool-skill'), join(home, '.claude', 'skills', 'pool-skill'), 'dir')
+    const env = setupPlugin({
+      marketDirs: [join(root, 'market')],
+      installedDir: join(root, 'installed'),
+      executorHomeDir: home,
+      autoDiscoverExecutors: true,
+      trashDir: join(root, 'trash'),
+    })
+    const del = await env.call('DELETE', '/skills-management/api', { name: 'pool-skill', executor: 'claude' })
+    assert.equal(del.status, 200)
+    // 链接进回收站（仍是链接），目标池原样保留
+    const lst = await lstat(join(root, 'trash', del.payload.trashId))
+    assert.equal(lst.isSymbolicLink(), true)
+    await stat(join(home, '.agents', 'skills', 'pool-skill', 'SKILL.md'))
+    // 恢复后 .claude 下重新是链接
+    const restore = await env.call('POST', '/skills-management/api/trash/restore', { id: del.payload.trashId })
+    assert.equal(restore.status, 200)
+    const lst2 = await lstat(join(home, '.claude', 'skills', 'pool-skill'))
+    assert.equal(lst2.isSymbolicLink(), true)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('config.trash === false restores permanent delete', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skills-notrash-'))
+  try {
+    const home = join(root, 'home')
+    await writeSkill(join(home, '.claude', 'skills'), 'hard', { name: 'hard', description: 'x' })
+    const env = setupPlugin({
+      marketDirs: [join(root, 'market')],
+      installedDir: join(root, 'installed'),
+      executorHomeDir: home,
+      autoDiscoverExecutors: true,
+      trashDir: join(root, 'trash'),
+      trash: false,
+    })
+    const del = await env.call('DELETE', '/skills-management/api', { name: 'hard', executor: 'claude' })
+    assert.equal(del.status, 200)
+    assert.equal(del.payload.trashId, undefined) // 永久删除不进回收站
+    assert.equal((await env.call('GET', '/skills-management/api/trash')).payload.enabled, false)
   } finally {
     await rm(root, { recursive: true, force: true })
   }

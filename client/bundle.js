@@ -661,7 +661,26 @@ window.__ModuleLoader__.load({
       installConfirm: '即将把「{name}」从「{label}」安装到 DSH 技能库，安装后可通过 DSH 的 skill 工具调用。',
       installFromMarket: '从市场安装 {name}？',
       deleteTitle: '删除技能',
-      deleteConfirm: '即将从「{where}」删除技能「{name}」，删除后不可恢复。',
+      deleteConfirm: '即将从「{where}」删除技能「{name}」，删除后移入回收站，可随时恢复。',
+      tabTrash: '回收站',
+      trashHint: '删除的技能暂存于此，可恢复到原位置或彻底删除。',
+      trashRetentionDays: '保留 {n} 天，到期自动清理',
+      trashKeepForever: '永久保留，不自动清理',
+      trashEmpty: '回收站是空的',
+      trashDisabled: '回收站已被插件配置（trash: false）停用，删除直接生效、不可恢复。',
+      trashNoRestoreTag: '元数据缺失，无法恢复',
+      trashFromLabel: '来源',
+      trashDeletedAtLabel: '删除时间',
+      restoreBtn: '恢复',
+      deleteForeverBtn: '彻底删除',
+      emptyTrashBtn: '清空回收站',
+      restoreConfirm: '将「{name}」恢复到原位置 {dir}？',
+      deleteForeverConfirm: '彻底删除「{name}」？此操作不可恢复。',
+      emptyTrashConfirm: '清空回收站？{n} 个回收项将被永久删除，此操作不可恢复。',
+      restoredToast: '已恢复到原位置',
+      deletedForeverToast: '已彻底删除',
+      emptiedTrashToast: '回收站已清空',
+      movedToTrash: '已移入回收站',
       whereDsh: 'DSH 技能库',
       operationFailed: '操作失败',
       preview: '文件预览',
@@ -812,7 +831,26 @@ window.__ModuleLoader__.load({
       installConfirm: 'Install "{name}" from {label} into the DSH skills library. It becomes callable through the DSH skill tool.',
       installFromMarket: 'Install {name} from market?',
       deleteTitle: 'Delete skill',
-      deleteConfirm: 'You are about to delete "{name}" from {where}. This cannot be undone.',
+      deleteConfirm: 'You are about to delete "{name}" from {where}. It will be moved to the trash and can be restored.',
+      tabTrash: 'Trash',
+      trashHint: 'Deleted skills are kept here — restore them to their original location or delete them forever.',
+      trashRetentionDays: 'Kept for {n} days, then purged automatically',
+      trashKeepForever: 'Kept forever, never auto-purged',
+      trashEmpty: 'Trash is empty',
+      trashDisabled: 'Trash is disabled by plugin config (trash: false); deletes take effect immediately and cannot be undone.',
+      trashNoRestoreTag: 'metadata missing, cannot restore',
+      trashFromLabel: 'Source',
+      trashDeletedAtLabel: 'Deleted',
+      restoreBtn: 'Restore',
+      deleteForeverBtn: 'Delete forever',
+      emptyTrashBtn: 'Empty trash',
+      restoreConfirm: 'Restore "{name}" to its original location {dir}?',
+      deleteForeverConfirm: 'Permanently delete "{name}"? This cannot be undone.',
+      emptyTrashConfirm: 'Empty the trash? {n} entries will be permanently deleted. This cannot be undone.',
+      restoredToast: 'Restored to its original location',
+      deletedForeverToast: 'Permanently deleted',
+      emptiedTrashToast: 'Trash emptied',
+      movedToTrash: 'Moved to trash',
       whereDsh: 'the DSH library',
       operationFailed: 'Operation failed',
       preview: 'File preview',
@@ -1590,6 +1628,86 @@ window.__ModuleLoader__.load({
             ]))
     }
 
+    /** 回收站：删除的技能暂存列表（服务端读取时已惰性清理过期项）。恢复按元数据
+     *  originalDir 放回原处，原位置被占用则服务端拒绝；彻底删除/清空不可恢复。 */
+    function TrashView({ t, onToast, onChanged }) {
+      const [data, setData] = useState(null)
+      const [busy, setBusy] = useState(false)
+      const [confirm, setConfirm] = useState(null) // { kind: 'restore' | 'forever', entry }
+      const [emptyArmed, setEmptyArmed] = useState(false)
+
+      const refresh = () => getJson(API + '/trash')
+        .then(d => { setData(d); setEmptyArmed(false) })
+        .catch(e => onToast(t('operationFailed') + ': ' + e.message))
+      useEffect(() => { refresh() }, [])
+
+      const mutate = async (url, method, body) => {
+        const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status)
+      }
+      const act = async (fn, toast) => {
+        setBusy(true)
+        try {
+          await fn()
+          setConfirm(null)
+          onToast(toast)
+          refresh()
+          onChanged && onChanged() // 恢复后来源列表重新出现该技能
+        } catch (e) { onToast(t('operationFailed') + ': ' + e.message) } finally { setBusy(false) }
+      }
+      const doRestore = (entry) => act(() => mutate(API + '/trash/restore', 'POST', { id: entry.id }), t('restoredToast'))
+      const doForever = (entry) => act(() => mutate(API + '/trash', 'DELETE', { id: entry.id }), t('deletedForeverToast'))
+      const doEmpty = () => act(() => mutate(API + '/trash', 'DELETE', { all: true }), t('emptiedTrashToast'))
+
+      if (data === null) return h(Spinner, { label: '…' })
+      const entries = data.entries || []
+      const rowEl = (entry) =>
+        h('div', { key: entry.id, style: { display: 'flex', flexDirection: 'column', gap: 4,
+            padding: '8px 10px', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 10 } },
+          h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+            h('span', { className: 'sk-title' }, entry.name),
+            entry.executorKey && h('span', { className: 'sk-tag' }, entry.executorKey),
+            !entry.restorable && h('span', { className: 'sk-tag danger' }, t('trashNoRestoreTag')),
+            h('span', { style: { flex: 1 } }),
+            h('span', { className: 'sk-hint', style: { fontSize: 12 } },
+              `${formatSize(entry.totalSize || 0)} · ${t('trashDeletedAtLabel')} ${entry.deletedAt ? formatTime(entry.deletedAt) : '-'}`),
+            h(ButtonLite, { small: true, disabled: busy || !entry.restorable, onClick: () => setConfirm({ kind: 'restore', entry }) }, t('restoreBtn')),
+            h(ButtonLite, { small: true, danger: true, disabled: busy, onClick: () => setConfirm({ kind: 'forever', entry }) }, t('deleteForeverBtn'))),
+          entry.description && h('div', { className: 'sk-hint' }, entry.description),
+          entry.originalDir && h('div', { className: 'sk-dir' }, entry.originalDir))
+
+      return [
+        h('div', { className: 'sk-toolbar', key: 'bar' },
+          h('span', { className: 'sk-hint' }, t('trashHint')),
+          data.enabled === true && h('span', { className: 'sk-tag' },
+            data.retentionDays === null ? t('trashKeepForever') : t('trashRetentionDays', { n: data.retentionDays })),
+          h('span', { className: 'spacer' }),
+          data.enabled === true && entries.length > 0 && h(ButtonLite, { small: true, disabled: busy,
+            onClick: () => (emptyArmed ? doEmpty() : setEmptyArmed(true)) }, t('emptyTrashBtn'))),
+        emptyArmed && entries.length > 0 && h('div', { key: 'arm', className: 'sk-tag danger', style: { alignSelf: 'flex-end' } },
+          t('emptyTrashConfirm', { n: entries.length })),
+        h('div', { key: 'list', style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+          data.enabled !== true
+            ? h(Empty, null, t('trashDisabled'))
+            : entries.length === 0
+              ? h(Empty, null, t('trashEmpty'))
+              : entries.map(rowEl)),
+        confirm && h(SkDialog, {
+          title: confirm.kind === 'restore' ? t('restoreBtn') : t('deleteForeverBtn'),
+          onClose: () => setConfirm(null),
+          footer: [
+            h(ButtonLite, { onClick: () => setConfirm(null) }, t('cancel')),
+            h(ButtonLite, { primary: true, danger: confirm.kind === 'forever', disabled: busy,
+              onClick: () => (confirm.kind === 'restore' ? doRestore(confirm.entry) : doForever(confirm.entry)) },
+              confirm.kind === 'restore' ? t('restoreBtn') : t('deleteForeverBtn')),
+          ],
+        }, h('div', { className: 'sk-hint' },
+          confirm.kind === 'restore'
+            ? t('restoreConfirm', { name: confirm.entry.name, dir: confirm.entry.originalDir || '-' })
+            : t('deleteForeverConfirm', { name: confirm.entry.name }))),
+      ]
+    }
+
     /** 增量网格：先渲染前 pageSize 张，按需增长——市场集合有 6k+ 条，不能一次全挂。
      *  以「当前筛选」作 key，让筛选变化时重置窗口。
      *  [性能] pageSize 从 120 降到 60：首屏要一次性挂载全部卡片，120 张的
@@ -1834,8 +1952,11 @@ window.__ModuleLoader__.load({
       }
       const doPendingDelete = async () => {
         if (!pendingDelete) return
-        await quickDelete(t, pendingDelete.executor, pendingDelete.name)
+        const ok = await quickDelete(t, pendingDelete.executor, pendingDelete.name)
         setPendingDelete(null)
+        if (!ok) return
+        setToastText(t('movedToTrash'))
+        setTimeout(() => setToastText(null), 2600)
         reloadExecutors()
         markMarketInstalled(pendingDelete.name, false)
         setBaseStale(true)
@@ -1877,6 +1998,10 @@ window.__ModuleLoader__.load({
             onBrowseAll: () => setExecutorView('all'),
             onOpenSettings: () => setExecutorSettingsOpen(true) })
         }
+      } else if (tab === 'trash') {
+        body = h(TrashView, { t,
+          onToast: (text) => { setMarketToast(text); setTimeout(() => setMarketToast(null), 3000) },
+          onChanged: () => { reloadExecutors(); setBaseStale(true) } })
       } else {
         // Market tab mirrors the executors tab: source cards by default, a flat
         // all-skills view on demand, and per-source drill-in with a scoped filter.
@@ -1955,14 +2080,14 @@ window.__ModuleLoader__.load({
           h('span', { className: 'sk-title', style: { fontSize: 16 } }, t('title')),
           h('span', { className: 'spacer' }),
           h(ButtonLite, { onClick: () => onClose && onClose() }, t('close'))),
-        h('div', { className: 'sk-tabs' }, ['executors', 'market'].map(key =>
+        h('div', { className: 'sk-tabs' }, ['executors', 'market', 'trash'].map(key =>
           h('button', { key, className: 'sk-tabpill' + (tab === key ? ' on' : ''), style: pillStyle(tab === key),
             onClick: () => { setTab(key); setFilterExecutor('all'); setExecutorView('cards'); setSearchExec(''); setSearchDrill(''); setSearchAll(''); setMarketView('cards'); setMarketDrill(null); setSearchMarketDrill(''); setSearchMarketAll(''); setSortBy('default') } }, t('tab' + key[0].toUpperCase() + key.slice(1))))),
         h('div', { className: 'sk-body' }, body),
         sel && h(DetailModal, { sel, executors, t,
           onClose: () => setSel(null),
           onInstalled: (name) => { setSel(null); reloadExecutors(); markMarketInstalled(name, true); setBaseStale(true) },
-          onDeleted: (name) => { setSel(null); reloadExecutors(); markMarketInstalled(name, false); setBaseStale(true) } }),
+          onDeleted: (name) => { setSel(null); setToastText(t('movedToTrash')); setTimeout(() => setToastText(null), 2600); reloadExecutors(); markMarketInstalled(name, false); setBaseStale(true) } }),
         shareParams && h(ShareSkillDialog, {
           t, params: shareParams, onClose: () => setShareParams(null),
           onToast: (text) => { setMarketToast(text); setTimeout(() => setMarketToast(null), 3000) },
@@ -2026,7 +2151,8 @@ window.__ModuleLoader__.load({
         const r = await fetch(API, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
         if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status)
         if (typeof done === 'function') done()
-      } catch (e) { alert(t('operationFailed') + ': ' + e.message) }
+        return true
+      } catch (e) { alert(t('operationFailed') + ': ' + e.message); return false }
     }
 
     // ── Slot entries ─────────────────────────────────────────────────────────
