@@ -274,8 +274,9 @@ const ZH = {
   tabSources: '来源',
   cardsHint: '选择一个智能体工具浏览它的技能，或一次查看全部',
   executorSettings: '执行器目录',
-  executorSettingsHint: '管理本机各执行器的技能目录：内置来源可改目录、可停用；也可新增自定义来源。保存后立即生效，无需重启。',
+  executorSettingsHint: '管理本机各执行器的技能目录：遵循 ~/.xxx/skills 约定的目录会自动发现（Windows 为 %USERPROFILE%\\.xxx\\skills）；内置与自动发现的来源可改目录、可停用；也可新增自定义来源。保存后立即生效，无需重启。',
   execSourceBuiltin: '内置',
+  execSourceAuto: '自动发现',
   execSourceCustom: '自定义',
   execDisabledTag: '已停用',
   execManagedTag: '由插件配置文件管理',
@@ -424,8 +425,9 @@ const EN = {
   tabSources: 'Sources',
   cardsHint: 'Pick an agent tool to browse its skills, or view everything at once',
   executorSettings: 'Executor dirs',
-  executorSettingsHint: 'Manage the skill directories of on-machine executors: built-in sources can be redirected or disabled; custom sources can be added. Changes apply immediately, no restart.',
+  executorSettingsHint: 'Manage the skill directories of on-machine executors: any ~/.xxx/skills directory is auto-discovered (on Windows: %USERPROFILE%\\.xxx\\skills); built-in and auto-discovered sources can be redirected or disabled; custom sources can be added. Changes apply immediately, no restart.',
   execSourceBuiltin: 'built-in',
+  execSourceAuto: 'auto-discovered',
   execSourceCustom: 'custom',
   execDisabledTag: 'disabled',
   execManagedTag: 'managed by plugin config',
@@ -1191,9 +1193,10 @@ function MarketSettingsDialog({ t, onClose, onToast, onSynced }) {
             h(ButtonLite, { primary: true, onClick: doSync }, busy ? t('syncing') : t('syncNow')))]))
 }
 
-/** 执行器目录管理：内置行可改目录/停用（dsh 锁定；cordis 配置管理的行只展示），
- *  自定义行可增删改。保存 = 整表 PUT executor-settings（replace 语义），服务端
- *  逐行校验（key kebab、重复、dsh 锁定），改完即时生效无需重启。 */
+/** 执行器目录管理：内置行与自动发现行（~/.xxx/skills 约定）可改目录/停用
+ * （dsh 锁定；cordis 配置管理的行只展示），自定义行可增删改。保存 = 整表 PUT
+ *  executor-settings（replace 语义），服务端逐行校验（key kebab、重复、dsh
+ *  锁定），改完即时生效无需重启。 */
 function ExecutorSettingsDialog({ t, onClose, onToast, onChanged }) {
   const [rows, setRows] = useState(null)
   const [busy, setBusy] = useState(false)
@@ -1243,7 +1246,8 @@ function ExecutorSettingsDialog({ t, onClose, onToast, onChanged }) {
       const dirs = {}
       const disabled = []
       for (const r of rows) {
-        if (r.source !== 'builtin' || r.locked || r.managedByConfig) continue
+        if (r.locked || r.managedByConfig) continue
+        if (r.source !== 'builtin' && r.source !== 'auto') continue
         if (r.disabled) disabled.push(r.key)
         const dir = String(r.dir || '').trim()
         // 等于默认值的覆盖不落盘（保持 sheet 干净）；已在 sheet 里的条目原样带回
@@ -1268,7 +1272,7 @@ function ExecutorSettingsDialog({ t, onClose, onToast, onChanged }) {
     return h('div', { key: r.__id, style: { display: 'flex', flexDirection: 'column', gap: 6,
         padding: '8px 10px', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 10, opacity: r.disabled ? 0.55 : 1 } },
       h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-        h('span', { className: 'sk-tag' }, r.source === 'builtin' ? t('execSourceBuiltin') : t('execSourceCustom')),
+        h('span', { className: 'sk-tag' }, r.source === 'builtin' ? t('execSourceBuiltin') : r.source === 'auto' ? t('execSourceAuto') : t('execSourceCustom')),
         r.source === 'custom' && editable
           ? h('input', { className: 'sk-input', value: r.key, placeholder: t('execKeyPlaceholder'), style: { width: 160 }, onChange: e => patchRow(i, { key: e.target.value }) })
           : h('span', { className: 'sk-title' }, r.label),
@@ -1279,7 +1283,7 @@ function ExecutorSettingsDialog({ t, onClose, onToast, onChanged }) {
         !r.locked && r.managedByConfig && tag(t('execManagedTag')),
         r.disabled && tag(t('execDisabledTag'), 'danger'),
         h('span', { style: { flex: 1 } }),
-        r.source === 'builtin' && editable
+        (r.source === 'builtin' || r.source === 'auto') && editable
           ? h('label', { style: { display: 'flex', alignItems: 'center', gap: 4, fontSize: 12.5, color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap', cursor: 'pointer' } },
               h('input', { type: 'checkbox', checked: !r.disabled, onChange: e => patchRow(i, { disabled: !e.target.checked }) }), t('execEnabledLabel'))
           : null,

@@ -6,11 +6,14 @@
  * Two skill universes, one API:
  * - Market: ntd-style bundled collections (git checkouts of GitHub skill
  *   repos). Read-only, install copies into the user library.
- * - Executors: every coding agent's on-machine skills directory
- *   (`~/.claude/skills`, `~/.agents/skills`, …), following the ntd source
- *   table. Scanned for display/detail; deletable per source unless marked
- *   read-only (`agents`); any executor skill can be copied into the dsh
- *   user library so the `skill` tool can call it.
+ * - Executors: every coding agent's on-machine skills directory. Discovery
+ *   follows the `~/.xxx/skills` convention (Windows: `%USERPROFILE%\.xxx\
+ *   skills`) — any dotted home subdir with a `skills/` child is a source,
+ *   key/label derived from the dir name (`.claude` → `claude`/`Claude`);
+ *   EXECUTOR_DEFS remains only for what the rule can't reach (the dsh
+ *   library root; mimo/zhanlu's `~/.local/share/…` paths). Scanned for
+ *   display/detail; deletable per source; any executor skill can be copied
+ *   into the dsh user library so the `skill` tool can call it.
  */
 
 const { createReadStream } = require('node:fs')
@@ -46,31 +49,97 @@ const DESCRIPTION_LIMIT = 140
 const KEBAB_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 
 /**
- * Known on-machine skill sources (executor → skills dir), ported from ntd's
- * `ALL_SKILL_SOURCES` table plus this machine's ZCode CLI. `sub` is relative
- * to $HOME; `dsh` is special — its root is the plugin's installedDir.
+ * 内置来源只留约定（~/.xxx/skills）覆盖不到的部分：
+ * - `dsh` 特殊——根即本插件安装库；
+ * - `sub` 为相对 $HOME 的显式路径（mimo/zhanlu 的 ~/.local/share/… 不合约定，
+ *   只能留表）。
+ * 其余一切来源由自动发现按目录名派生 key/label 收录（.claude → claude/Claude）。
  */
 const EXECUTOR_DEFS = [
   { key: 'dsh', label: 'DSH' },
-  { key: 'claudecode', label: 'Claude Code', sub: '.claude/skills' },
-  { key: 'zcode', label: 'ZCode', sub: '.zcode/skills' },
-  { key: 'codex', label: 'Codex', sub: '.codex/skills' },
-  { key: 'opencode', label: 'OpenCode', sub: '.opencode/skills' },
-  { key: 'codebuddy', label: 'CodeBuddy', sub: '.codebuddy/skills' },
-  { key: 'atomcode', label: 'AtomCode', sub: '.atomcode/skills' },
-  { key: 'hermes', label: 'Hermes', sub: '.hermes/skills' },
-  { key: 'kimi', label: 'Kimi', sub: '.kimi/skills' },
-  { key: 'mobilecoder', label: 'MobileCoder', sub: '.mobile-coder/skills' },
-  { key: 'codewhale', label: 'Codewhale', sub: '.codewhale/skills' },
-  { key: 'kilo', label: 'Kilo', sub: '.kilo/skills' },
-  { key: 'pi', label: 'Pi', sub: '.pi/skills' },
   { key: 'mimo', label: 'Mimo', sub: '.local/share/mimocode/skills' },
   { key: 'zhanlu', label: 'ZhanLu', sub: '.local/share/zhanlu/skills' },
-  { key: 'workbuddy', label: 'WorkBuddy', sub: '.workbuddy/skills' },
-  // agents 共享池曾是只读来源；治理键开关（disable-model-invocation）覆盖该根后
-  // "只读"名不副实——与 dsh 的 user-agents 内置根对齐，按普通可写来源对待。
-  { key: 'agents', label: 'Agents', sub: '.agents/skills' },
 ]
+
+/** 内置 key 集合，供 sheet 校验/去重。 */
+const BUILTIN_KEYS = new Set(EXECUTOR_DEFS.map((d) => d.key))
+
+// ── 约定式自动发现：~/.xxx/skills ─────────────────────────────────────
+// 约定 = 家目录直下任何 `.` 开头的目录，只要内含 skills/ 子目录，就是一个
+// 执行器技能来源，无需在内置表登记。内置表继续负责两件事：已知工具的显示名
+// （Claude Code、ZCode…），以及不合约定的路径（mimo 的 ~/.local/share/…）。
+// Windows 上 ~ = %USERPROFILE%，同一规则即 C:\Users\<user>\.xxx\skills——
+// 点前缀目录名在 Windows 下同样是字面约定，代码路径全平台一致。
+const AUTO_DISCOVER_SKIP = new Set(['.git']) // 家目录本身做 dotfiles 仓库时排除
+
+/** 路径去重键：Windows 文件系统大小写不敏感，比较前折叠。 */
+function normPathKey(p) {
+  const r = resolve(p)
+  return process.platform === 'win32' ? r.toLowerCase() : r
+}
+
+/** '.mobile-coder' → 'mobile-coder'；无法派生出合规 kebab key 时 undefined。 */
+function keyFromDotDir(name) {
+  const key = String(name).replace(/^\.+/, '').toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+  return KEBAB_NAME_RE.test(key) ? key : undefined
+}
+
+/** 派生展示名：'mobile-coder' → 'Mobile Coder'（内置表命中的不走这里）。 */
+function labelFromKey(key) {
+  return key.split('-').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+}
+
+/**
+ * 扫描 home 直下符合 `~/.xxx/skills` 约定的目录，按目录名排序返回
+ * [{ name: '.foo', dir: '<home>/.foo/skills' }]。点目录与 skills 子目录都允许
+ * 是软链（Windows junction 在 Dirent 上同样报 isSymbolicLink，stat 跟随）。
+ */
+async function discoverSkillHomes(home) {
+  const out = []
+  let entries
+  try { entries = await fsP.readdir(home, { withFileTypes: true }) } catch { return out }
+  for (const entry of entries) {
+    if (entry.name.length < 2 || !entry.name.startsWith('.') || AUTO_DISCOVER_SKIP.has(entry.name)) continue
+    let isDir = entry.isDirectory()
+    if (!isDir && entry.isSymbolicLink()) {
+      try { isDir = (await fsP.stat(join(home, entry.name))).isDirectory() } catch { isDir = false }
+    }
+    if (!isDir) continue
+    const dir = join(home, entry.name, 'skills')
+    let stat
+    try { stat = await fsP.stat(dir) } catch { continue }
+    if (!stat.isDirectory()) continue
+    out.push({ name: entry.name, dir })
+  }
+  out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+  return out
+}
+
+/**
+ * 发现的目录 → 自动来源行。去重与命名规则：
+ * - 路径命中任一内置行的默认根（含 dsh 安装库）或自定义行目录 → 该路径已有
+ *   归属，不再自动添加。内置行被停用时其约定目录随之整隐（符合「停用」直觉），
+ *   因此这里比的是内置默认根而非当前生效根。
+ * - 派生 key 与既有 key 冲突且路径不同 → 追加 -2/-3… 后缀；label 始终按目录
+ *   原名派生（key 加后缀不影响显示名）。
+ */
+function deriveAutoExecutors(discovered, takenPaths, takenKeys) {
+  const paths = new Set(takenPaths.map(normPathKey))
+  const keys = new Set(takenKeys)
+  const rows = []
+  for (const { name, dir } of discovered) {
+    if (paths.has(normPathKey(dir))) continue
+    const base = keyFromDotDir(name)
+    if (base === undefined) continue
+    let key = base
+    for (let n = 2; keys.has(key); n += 1) key = `${base}-${n}`
+    keys.add(key)
+    paths.add(normPathKey(dir))
+    rows.push({ key, label: labelFromKey(base), root: dir, readOnly: false, source: 'auto', locked: false })
+  }
+  return rows
+}
 
 /** Target directory name when installing a (possibly nested) skill name. */
 function installDirName(fullName) {
@@ -516,9 +585,9 @@ function marketSettingsSchema() {
 }
 
 // ── Executor（本机技能来源）运行时 sheet ─────────────────────────────────
-// 内置表 EXECUTOR_DEFS 永远是默认值，这份 sheet 只存用户增量（目录覆盖 /
-// 停用 / 新增），所以「恢复默认」= 清空整个 sheet。与 cordis 静态配置
-// （executorDirs/disabledExecutors/extraExecutors）的优先级：cordis 最高。
+// 内置表 EXECUTOR_DEFS + 约定自动发现永远是默认值，这份 sheet 只存用户增量
+// （目录覆盖 / 停用 / 新增），所以「恢复默认」= 清空整个 sheet。与 cordis
+// 静态配置（executorDirs/disabledExecutors/extraExecutors）的优先级：cordis 最高。
 function executorSettingsSchema() {
   if (!Schema) return null
   return Schema.object({
@@ -566,7 +635,7 @@ module.exports = {
   name: 'skills-management',
   Config: Config ?? undefined,
   inject: ['skills', 'webServer', 'settings', 'agents', 'agentDefaultModel', 'sessions', 'connection'],
-  __internals: { extractFrontmatter, parseSkillMd, invocationPolicy, installDirName, EXECUTOR_DEFS, usageStat, usageMemo, setUsageEncoderOverride: (v) => { usageEncoderOverride = v } },
+  __internals: { extractFrontmatter, parseSkillMd, invocationPolicy, installDirName, EXECUTOR_DEFS, usageStat, usageMemo, setUsageEncoderOverride: (v) => { usageEncoderOverride = v }, discoverSkillHomes, deriveAutoExecutors, keyFromDotDir },
 
   apply(ctx, config = {}) {
     // Explicit marketDirs config wins; otherwise the scan follows the
@@ -604,6 +673,10 @@ module.exports = {
     const executorDirsOverride = config.executorDirs !== undefined && config.executorDirs !== null && typeof config.executorDirs === 'object' ? config.executorDirs : {}
     const disabledExecutors = new Set(Array.isArray(config.disabledExecutors) ? config.disabledExecutors : [])
     const cordisExtras = (Array.isArray(config.extraExecutors) ? config.extraExecutors : []).filter((e) => e !== null && typeof e === 'object')
+    // 执行器根的归属家目录：默认 os.homedir()（Windows 下即 %USERPROFILE%）。
+    // executorHomeDir 主要服务测试——把内置默认根与自动发现一起指到临时家目录。
+    const executorHome = () => (config.executorHomeDir !== undefined ? resolve(expandTilde(String(config.executorHomeDir))) : homedir())
+    const autoDiscover = config.autoDiscoverExecutors !== false // 默认开：扫 ~/.xxx/skills
     const executorSettingsOverrides = {} // 进程内兜底：写回缺席/失败时保本次运行一致
     const runtimeSheet = () => {
       const doc = (liveSettings && typeof liveSettings === 'object') ? liveSettings : {}
@@ -615,11 +688,50 @@ module.exports = {
         extra: Array.isArray(v.extra) ? v.extra : [],
       }
     }
+
+    // ── 自动发现缓存：HTTP 路由入口一律 await refreshAutoRows()（每次请求
+    // 对齐磁盘现状，并发去重）；同步路径（linkExecutorLabel 等）读最近一次缓存。
+    // 失败保留旧缓存——一次 EACCES 不应清空已发现的来源。
+    let autoCache = []
+    let autoRefresh = null
+    const refreshAutoRows = () => {
+      if (autoRefresh === null) {
+        autoRefresh = (async () => {
+          if (!autoDiscover) { autoCache = []; return }
+          const discovered = await discoverSkillHomes(executorHome())
+          const sheet = runtimeSheet()
+          const takenPaths = [installedDir] // dsh 行：根即安装库
+          const takenKeys = []
+          for (const def of EXECUTOR_DEFS) {
+            takenKeys.push(def.key)
+            if (def.key !== 'dsh' && def.sub !== undefined) takenPaths.push(join(executorHome(), ...def.sub.split('/')))
+          }
+          for (const extra of [...cordisExtras, ...sheet.extra]) {
+            if (typeof extra.key !== 'string' || extra.key === '') continue
+            if (typeof extra.dir !== 'string' || extra.dir === '') continue
+            takenKeys.push(extra.key)
+            takenPaths.push(resolve(expandTilde(extra.dir)))
+          }
+          autoCache = deriveAutoExecutors(discovered, takenPaths, takenKeys)
+        })()
+          .catch((e) => { ctx.logger.warn(`skills-management: auto-discover executors: ${e && e.message}`) })
+          .finally(() => { autoRefresh = null })
+      }
+      return autoRefresh
+    }
+
     const computeExecutorRows = () => {
       const sheet = runtimeSheet()
       const runtimeDisabled = new Set(sheet.disabled)
+      const isDisabled = (key) => disabledExecutors.has(key) || runtimeDisabled.has(key)
       const rows = []
       const seen = new Set()
+      // 生效根优先级：cordis executorDirs > 运行时 sheet 覆盖 > 默认（约定规则/显式 sub）
+      const resolveRoot = (key, defaultRoot) => {
+        if (executorDirsOverride[key] !== undefined) return resolve(expandTilde(String(executorDirsOverride[key])))
+        if (typeof sheet.dirs[key] === 'string' && sheet.dirs[key] !== '') return resolve(expandTilde(sheet.dirs[key]))
+        return defaultRoot
+      }
       const pushExtra = (extra, locked) => {
         if (extra === null || typeof extra !== 'object') return
         if (typeof extra.key !== 'string' || extra.key === '') return
@@ -635,45 +747,60 @@ module.exports = {
           locked: locked === true,
         })
       }
+      const pushRow = (key, label, root, readOnly) => {
+        if (root === undefined || isDisabled(key) || seen.has(key)) return
+        seen.add(key)
+        rows.push({ key, label, root, readOnly: readOnly === true, source: 'builtin', locked: key === 'dsh' })
+      }
+      // 内置（dsh + 约定外显式路径，行常驻）→ 自动发现（约定目录存在才有行；
+      // 目录覆盖/停用照常作用于自动行）→ 自定义
       for (const def of EXECUTOR_DEFS) {
-        if (disabledExecutors.has(def.key) || runtimeDisabled.has(def.key)) continue
-        let root
-        if (def.key === 'dsh') root = installedDir
-        else if (executorDirsOverride[def.key] !== undefined) root = resolve(expandTilde(String(executorDirsOverride[def.key])))
-        else if (typeof sheet.dirs[def.key] === 'string' && sheet.dirs[def.key] !== '') root = resolve(expandTilde(sheet.dirs[def.key]))
-        else root = def.sub !== undefined ? join(homedir(), ...def.sub.split('/')) : undefined
-        if (seen.has(def.key)) continue
-        seen.add(def.key)
-        rows.push({ key: def.key, label: def.label, root, readOnly: def.readOnly === true, source: 'builtin', locked: def.key === 'dsh' })
+        pushRow(def.key, def.label, def.key === 'dsh'
+          ? installedDir
+          : resolveRoot(def.key, def.sub !== undefined ? join(executorHome(), ...def.sub.split('/')) : undefined), def.readOnly === true)
+      }
+      for (const row of autoCache) {
+        if (seen.has(row.key)) continue // 防御：derive 已按当前 sheet 避开冲突
+        if (isDisabled(row.key)) continue
+        seen.add(row.key)
+        rows.push({ ...row, root: resolveRoot(row.key, row.root) })
       }
       for (const extra of cordisExtras) pushExtra(extra, true)
       for (const extra of sheet.extra) pushExtra(extra, false)
       return rows
     }
-    /** 管理面板投影：全部内置（停用的也列，UI 置灰）+ 自定义，带可编辑性标记。 */
+    /** 管理面板投影：内置（dsh + 约定外，常驻）+ 自动发现（约定目录在才有行）
+     *  + 自定义；停用的也列出（UI 置灰），带每行可编辑性标记。 */
     const executorSheetProjection = () => {
       const sheet = runtimeSheet()
       const runtimeDisabled = new Set(sheet.disabled)
       const executors = []
-      for (const def of EXECUTOR_DEFS) {
-        const byConfig = executorDirsOverride[def.key] !== undefined
-        const runtimeOverridden = typeof sheet.dirs[def.key] === 'string' && sheet.dirs[def.key] !== ''
+      // 内置/自动行共用：defaultDisplay 为该来源的默认目录展示串
+      const pushRow = (key, label, defaultDisplay, source) => {
+        const byConfig = executorDirsOverride[key] !== undefined
+        const runtimeOverridden = typeof sheet.dirs[key] === 'string' && sheet.dirs[key] !== ''
         executors.push({
-          key: def.key,
-          label: def.label,
-          source: 'builtin',
-          locked: def.key === 'dsh',
+          key,
+          label,
+          source,
+          locked: key === 'dsh',
           managedByConfig: byConfig,
-          disabled: def.key !== 'dsh' && (disabledExecutors.has(def.key) || runtimeDisabled.has(def.key)),
+          disabled: key !== 'dsh' && (disabledExecutors.has(key) || runtimeDisabled.has(key)),
           overridden: runtimeOverridden,
-          defaultDir: def.key === 'dsh' ? displayPath(installedDir) : def.sub !== undefined ? '~/' + def.sub : '',
-          dir: def.key === 'dsh'
+          defaultDir: defaultDisplay,
+          dir: key === 'dsh'
             ? displayPath(installedDir)
-            : byConfig ? displayPath(resolve(expandTilde(String(executorDirsOverride[def.key]))))
-            : runtimeOverridden ? sheet.dirs[def.key]
-            : def.sub !== undefined ? '~/' + def.sub : '',
+            : byConfig ? displayPath(resolve(expandTilde(String(executorDirsOverride[key]))))
+            : runtimeOverridden ? sheet.dirs[key]
+            : defaultDisplay,
         })
       }
+      for (const def of EXECUTOR_DEFS) {
+        pushRow(def.key, def.label, def.key === 'dsh'
+          ? displayPath(installedDir)
+          : def.sub !== undefined ? '~/' + def.sub : '', 'builtin')
+      }
+      for (const row of autoCache) pushRow(row.key, row.label, displayPath(row.root), 'auto')
       for (const extra of cordisExtras) {
         if (typeof extra.key !== 'string' || extra.key === '' || typeof extra.dir !== 'string' || extra.dir === '') continue
         executors.push({ key: extra.key, label: typeof extra.label === 'string' && extra.label !== '' ? extra.label : extra.key, source: 'custom', locked: false, managedByConfig: true, disabled: false, dir: extra.dir })
@@ -975,6 +1102,9 @@ module.exports = {
       return () => { usageWarmSeq += 1; clearTimeout(timer) }
     }, 'skills-management: usage memo warm-up')
 
+    // 启动即扫一次约定目录，让同步路径（linkExecutorLabel）在首个请求前就有缓存
+    refreshAutoRows()
+
     const shareRunJobs = new Map()
     // Same-process Agent services（静态注入：apply 时已就绪；动态 ctx.inject 在
     // apply 内不触发是平台 gotcha）。
@@ -1135,8 +1265,9 @@ module.exports = {
           }
 
           // GET /skills-management/api/executor-settings → 执行器目录管理面板：
-          // 全部内置（停用的也在，UI 置灰）+ 自定义，带每行可编辑性标记。
+          // 全部内置（停用的也在，UI 置灰）+ 自动发现 + 自定义，带每行可编辑性标记。
           if (req.method === 'GET' && apiPath.endsWith('/skills-management/api/executor-settings')) {
+            await refreshAutoRows()
             sendJson(res, 200, { executors: executorSheetProjection(), settingsFile: join(dshHome(), 'settings.yaml') })
             return
           }
@@ -1147,12 +1278,16 @@ module.exports = {
           // 外层 catch 回 400，持久化发生在校验通过之后。
           if (req.method === 'PUT' && apiPath.endsWith('/skills-management/api/executor-settings')) {
             const body = await readJsonBody(req)
+            await refreshAutoRows() // 校验 disabled/extra 需要当前自动发现的 key 集合
             const dirs = {}
             if (body.dirs !== undefined && body.dirs !== null) {
               if (typeof body.dirs !== 'object' || Array.isArray(body.dirs)) throw new Error('dirs must be an object of executor key → directory')
+              // 可覆盖目录的 key = 内置 + 当前自动发现 + 已在 sheet 里的条目
+              // （祖父条款：目录暂时不在也不应让整表保存 400）
+              const knownDirs = new Set([...BUILTIN_KEYS, ...autoCache.map((r) => r.key), ...Object.keys(runtimeSheet().dirs)])
               for (const [key, value] of Object.entries(body.dirs)) {
                 if (key === 'dsh') throw new Error("executor 'dsh' is locked: its root is the installed skill library")
-                if (!EXECUTOR_DEFS.some((d) => d.key === key)) throw new Error(`unknown executor '${key}'`)
+                if (!knownDirs.has(key)) throw new Error(`unknown executor '${key}'`)
                 if (typeof value !== 'string' || value.trim() === '') throw new Error(`dir for '${key}' must be a non-empty string`)
                 dirs[key] = value.trim()
               }
@@ -1160,10 +1295,13 @@ module.exports = {
             const disabled = []
             if (body.disabled !== undefined && body.disabled !== null) {
               if (!Array.isArray(body.disabled)) throw new Error('disabled must be an array of executor keys')
+              // 可停用的 key = 内置 + 当前自动发现 + 已在 sheet 里的条目（祖父条款：
+              // 停用后目录被删，再次整表保存不应因「unknown executor」整单被拒）
+              const knownDisabled = new Set([...BUILTIN_KEYS, ...autoCache.map((r) => r.key), ...runtimeSheet().disabled.map(String)])
               for (const item of body.disabled) {
                 const key = String(item)
                 if (key === 'dsh') throw new Error("executor 'dsh' cannot be disabled")
-                if (!EXECUTOR_DEFS.some((d) => d.key === key)) throw new Error(`unknown executor '${key}'`)
+                if (!knownDisabled.has(key)) throw new Error(`unknown executor '${key}'`)
                 disabled.push(key)
               }
             }
@@ -1174,7 +1312,7 @@ module.exports = {
                 if (item === null || typeof item !== 'object') throw new Error('extra entries must be objects')
                 const key = typeof item.key === 'string' ? item.key.trim() : ''
                 if (!KEBAB_NAME_RE.test(key)) throw new Error(`executor key '${key || '(empty)'}' must be kebab-case (a-z 0-9 -)`)
-                if (EXECUTOR_DEFS.some((d) => d.key === key) || extra.some((e) => e.key === key)) throw new Error(`executor key '${key}' already exists`)
+                if (BUILTIN_KEYS.has(key) || autoCache.some((r) => r.key === key) || extra.some((e) => e.key === key)) throw new Error(`executor key '${key}' already exists`)
                 if (typeof item.dir !== 'string' || item.dir.trim() === '') throw new Error(`dir for '${key}' must be a non-empty string`)
                 extra.push({ key, label: typeof item.label === 'string' && item.label.trim() !== '' ? item.label.trim() : key, dir: item.dir.trim() })
               }
@@ -1190,6 +1328,7 @@ module.exports = {
                 ])
               } catch (e) { ctx.logger.warn(`skills-management: executor sheet update 失败（仅本次运行生效）: ${e && e.message}`) }
             }
+            await refreshAutoRows() // sheet 变化影响去重/停用，投影前重派生
             sendJson(res, 200, { executors: executorSheetProjection(), settingsFile: join(dshHome(), 'settings.yaml') })
             return
           }
@@ -1221,6 +1360,7 @@ module.exports = {
           // Variants: ?mode=summary (counts only, no skill arrays) and
           // ?executor=<key> (one source, full list — lazy drill-in).
           if (req.method === 'GET' && apiPath.endsWith('/skills-management/api/executors')) {
+            await refreshAutoRows()
             const scopeKey = query.get('executor')
             if (scopeKey !== null && scopeKey !== '') {
               const scoped = findExecutorRow(scopeKey)
@@ -1256,6 +1396,7 @@ module.exports = {
 
           // GET /skills-management/api/detail?name=&executor= → detail
           if (req.method === 'GET' && apiPath.endsWith('/skills-management/api/detail')) {
+            await refreshAutoRows()
             const name = query.get('name') || ''
             const located = await locateNamedSkillDir(name, query.get('executor'))
             const content = await fsP.readFile(join(located.dir, 'SKILL.md'), 'utf8')
@@ -1275,6 +1416,7 @@ module.exports = {
 
           // GET /skills-management/api/file?name=&path=&executor= → file content
           if (req.method === 'GET' && apiPath.endsWith('/skills-management/api/file')) {
+            await refreshAutoRows()
             const name = query.get('name') || '', filePath = query.get('path') || ''
             const located = await locateNamedSkillDir(name, query.get('executor'))
             await sendSkillFile(res, located.dir, filePath, contentTypeFor(filePath))
@@ -1284,6 +1426,7 @@ module.exports = {
           // POST /skills-management/api/install {name, from?, overwrite?}
           if (req.method === 'POST' && apiPath.endsWith('/skills-management/api/install')) {
             const body = await readJsonBody(req)
+            await refreshAutoRows()
             if (typeof body.name !== 'string' || body.name === '') { sendJson(res, 400, { error: 'body must provide name' }); return }
             const result = typeof body.from === 'string' && body.from !== '' && body.from !== 'market'
               ? await installFromExecutor(body.from, body.name, body.overwrite === true)
@@ -1295,6 +1438,7 @@ module.exports = {
           // DELETE /skills-management/api {name, executor?} → remove
           if (req.method === 'DELETE' && apiPath.endsWith('/skills-management/api')) {
             const body = await readJsonBody(req)
+            await refreshAutoRows()
             if (typeof body.name !== 'string' || body.name === '') { sendJson(res, 400, { error: 'body must provide name' }); return }
             sendJson(res, 200, await deleteSkill(body.name, typeof body.executor === 'string' ? body.executor : undefined))
             return

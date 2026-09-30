@@ -158,7 +158,123 @@ window.__ModuleLoader__.load({
         }
       }
 
-      return { substituteParams: substituteParams, makeActionShareDialog: makeActionShareDialog }
+      // ── 共享事件推送枢纽 ─────────────────────────────────────────────────
+      // 解决:dsh web 网关是 HTTP/1.1,同源并发只有 ~6 条连接,每个插件自建
+      // 永久 SSE 会把预算占满、首页全部排队。全页面只开**一条**事件通道
+      // (WebSocket 优先,握手后豁免于连接预算;连续 3 次握手失败自动降级
+      // SSE 总线),按帧里的 plugin 字段分发。服务端由任意消费者经
+      // PluginKit.ensureHostHub(ctx, {webServer, connection}) 协调出唯一路由
+      // (本包 src/index.js)。
+      //
+      // 关键实现约束:**总线状态必须挂 window.__dshEventHub**,不能放本文件
+      // 模块作用域——每个消费者 bundle 都内联一份本源码,模块状态是每副本
+      // 独立的,只有 window 上的状态能跨副本共享(否则每插件各开一条 ws)。
+      var HUB_WS_PATH = '/dsh-event-hub/ws'
+      var HUB_SSE_PATH = '/dsh-event-hub/api/stream'
+
+      function hubState() {
+        if (!window.__dshEventHub) {
+          window.__dshEventHub = {
+            subscribers: new Map(), // plugin -> Set<fn(data, frame)>
+            started: false,
+            ws: null,
+            wsAttempts: 0,
+            sse: null,
+          }
+        }
+        window.__dshEventHub.subscribe = function (plugin, fn) {
+          return hubSubscribe(plugin, fn)
+        }
+        window.__dshEventHub.readyState = function () {
+          if (hubState().ws && hubState().ws.readyState === 1) return 1
+          if (hubState().sse) return 1
+          return 0
+        }
+        return window.__dshEventHub
+      }
+
+      function hubDispatch(data, frame) {
+        var st = hubState()
+        var set = st.subscribers.get(frame.plugin)
+        if (!set) return
+        set.forEach(function (fn) {
+          try { fn(data, frame) } catch (e) { /* 单个订阅者出错不影响其他 */ }
+        })
+      }
+
+      function hubSubscribe(plugin, fn) {
+        var st = hubState()
+        var set = st.subscribers.get(plugin)
+        if (!set) { set = new Set(); st.subscribers.set(plugin, set) }
+        set.add(fn)
+        return function () { st.subscribers.get(plugin).delete(fn) }
+      }
+
+      /** SSE 兜底总线(老宿主 ws 不可用/连续握手失败时)。 */
+      function startSseHub() {
+        var st = hubState()
+        if (st.mode === 'sse' && st.sse) return
+        st.mode = 'sse'
+        st.sse = new EventSource(HUB_SSE_PATH)
+        st.sse.onmessage = function (msg) {
+          var frame
+          try { frame = JSON.parse(msg.data) } catch (e) { return }
+          if (!frame || typeof frame.plugin !== 'string') return
+          hubDispatch(frame.data, frame)
+        }
+      }
+
+      /** ws 主通道:自动重连;连续 3 次未握手成功则永久降级 SSE。 */
+      function startWsHub() {
+        var st = hubState()
+        if (st.ws) return
+        try {
+          var proto = location.protocol === 'https:' ? 'wss://' : 'ws://'
+          st.wsAttempts++
+          st.ws = new WebSocket(proto + location.host + HUB_WS_PATH)
+          st.ws.onopen = function () { st.wsAttempts = 0 }
+          st.ws.onmessage = function (msg) {
+            var frame
+            try { frame = JSON.parse(msg.data) } catch (e) { return }
+            if (!frame || typeof frame.plugin !== 'string') return
+            hubDispatch(frame.data, frame)
+          }
+          st.ws.onclose = function () {
+            st.ws = null
+            if (st.wsAttempts < 3) setTimeout(function () { startTransport() }, 3000)
+            else startSseHub()
+          }
+          st.ws.onerror = function () { try { st.ws.close() } catch (e) { /* 已关 */ } }
+        } catch (e) {
+          startSseHub()
+        }
+      }
+
+      function startTransport() {
+        var st = hubState()
+        if (st.started && (st.ws || st.sse)) return
+        // WebSocket 优先(握手后豁免于 h1.1 连接预算);连续 3 次握手失败转 SSE
+        if (typeof WebSocket !== 'undefined' && typeof location !== 'undefined' && st.wsAttempts < 3) startWsHub()
+        else startSseHub()
+      }
+
+      /**
+       * 订阅某插件的事件流:枢纽就绪则共享连接(零额外连接);
+       * 浏览器不支持时返回 null,调用方自行回退(自有 SSE / 轮询)。
+       */
+      function connectEvents(plugin, onFrame, onState) {
+        if (typeof window === 'undefined' || typeof EventSource === 'undefined') return null
+        startTransport()
+        var off = hubSubscribe(plugin, function (data, frame) {
+          if (onState) { try { onState('live') } catch (e) {} }
+          onFrame(data, frame)
+        })
+        var st = hubState()
+        if (onState) { try { onState(st.ws || st.sse ? 'live' : 'connecting') } catch (e) {} }
+        return off
+      }
+
+      return { substituteParams: substituteParams, makeActionShareDialog: makeActionShareDialog, connectEvents: connectEvents }
     })()
 
     /**
@@ -437,8 +553,9 @@ window.__ModuleLoader__.load({
       tabSources: '来源',
       cardsHint: '选择一个智能体工具浏览它的技能，或一次查看全部',
       executorSettings: '执行器目录',
-      executorSettingsHint: '管理本机各执行器的技能目录：内置来源可改目录、可停用；也可新增自定义来源。保存后立即生效，无需重启。',
+      executorSettingsHint: '管理本机各执行器的技能目录：遵循 ~/.xxx/skills 约定的目录会自动发现（Windows 为 %USERPROFILE%\\.xxx\\skills）；内置与自动发现的来源可改目录、可停用；也可新增自定义来源。保存后立即生效，无需重启。',
       execSourceBuiltin: '内置',
+      execSourceAuto: '自动发现',
       execSourceCustom: '自定义',
       execDisabledTag: '已停用',
       execManagedTag: '由插件配置文件管理',
@@ -587,8 +704,9 @@ window.__ModuleLoader__.load({
       tabSources: 'Sources',
       cardsHint: 'Pick an agent tool to browse its skills, or view everything at once',
       executorSettings: 'Executor dirs',
-      executorSettingsHint: 'Manage the skill directories of on-machine executors: built-in sources can be redirected or disabled; custom sources can be added. Changes apply immediately, no restart.',
+      executorSettingsHint: 'Manage the skill directories of on-machine executors: any ~/.xxx/skills directory is auto-discovered (on Windows: %USERPROFILE%\\.xxx\\skills); built-in and auto-discovered sources can be redirected or disabled; custom sources can be added. Changes apply immediately, no restart.',
       execSourceBuiltin: 'built-in',
+      execSourceAuto: 'auto-discovered',
       execSourceCustom: 'custom',
       execDisabledTag: 'disabled',
       execManagedTag: 'managed by plugin config',
@@ -1354,9 +1472,10 @@ window.__ModuleLoader__.load({
                 h(ButtonLite, { primary: true, onClick: doSync }, busy ? t('syncing') : t('syncNow')))]))
     }
 
-    /** 执行器目录管理：内置行可改目录/停用（dsh 锁定；cordis 配置管理的行只展示），
-     *  自定义行可增删改。保存 = 整表 PUT executor-settings（replace 语义），服务端
-     *  逐行校验（key kebab、重复、dsh 锁定），改完即时生效无需重启。 */
+    /** 执行器目录管理：内置行与自动发现行（~/.xxx/skills 约定）可改目录/停用
+     * （dsh 锁定；cordis 配置管理的行只展示），自定义行可增删改。保存 = 整表 PUT
+     *  executor-settings（replace 语义），服务端逐行校验（key kebab、重复、dsh
+     *  锁定），改完即时生效无需重启。 */
     function ExecutorSettingsDialog({ t, onClose, onToast, onChanged }) {
       const [rows, setRows] = useState(null)
       const [busy, setBusy] = useState(false)
@@ -1406,7 +1525,8 @@ window.__ModuleLoader__.load({
           const dirs = {}
           const disabled = []
           for (const r of rows) {
-            if (r.source !== 'builtin' || r.locked || r.managedByConfig) continue
+            if (r.locked || r.managedByConfig) continue
+            if (r.source !== 'builtin' && r.source !== 'auto') continue
             if (r.disabled) disabled.push(r.key)
             const dir = String(r.dir || '').trim()
             // 等于默认值的覆盖不落盘（保持 sheet 干净）；已在 sheet 里的条目原样带回
@@ -1431,7 +1551,7 @@ window.__ModuleLoader__.load({
         return h('div', { key: r.__id, style: { display: 'flex', flexDirection: 'column', gap: 6,
             padding: '8px 10px', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 10, opacity: r.disabled ? 0.55 : 1 } },
           h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-            h('span', { className: 'sk-tag' }, r.source === 'builtin' ? t('execSourceBuiltin') : t('execSourceCustom')),
+            h('span', { className: 'sk-tag' }, r.source === 'builtin' ? t('execSourceBuiltin') : r.source === 'auto' ? t('execSourceAuto') : t('execSourceCustom')),
             r.source === 'custom' && editable
               ? h('input', { className: 'sk-input', value: r.key, placeholder: t('execKeyPlaceholder'), style: { width: 160 }, onChange: e => patchRow(i, { key: e.target.value }) })
               : h('span', { className: 'sk-title' }, r.label),
@@ -1442,7 +1562,7 @@ window.__ModuleLoader__.load({
             !r.locked && r.managedByConfig && tag(t('execManagedTag')),
             r.disabled && tag(t('execDisabledTag'), 'danger'),
             h('span', { style: { flex: 1 } }),
-            r.source === 'builtin' && editable
+            (r.source === 'builtin' || r.source === 'auto') && editable
               ? h('label', { style: { display: 'flex', alignItems: 'center', gap: 4, fontSize: 12.5, color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap', cursor: 'pointer' } },
                   h('input', { type: 'checkbox', checked: !r.disabled, onChange: e => patchRow(i, { disabled: !e.target.checked }) }), t('execEnabledLabel'))
               : null,

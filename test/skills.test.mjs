@@ -8,7 +8,7 @@ import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
 const plugin = require('../src/index.js')
-const { extractFrontmatter, parseSkillMd, invocationPolicy, installDirName, EXECUTOR_DEFS } = plugin.__internals
+const { extractFrontmatter, parseSkillMd, invocationPolicy, installDirName, EXECUTOR_DEFS, discoverSkillHomes, deriveAutoExecutors, keyFromDotDir } = plugin.__internals
 
 // ── HTTP handler harness ────────────────────────────────────────────────
 
@@ -31,6 +31,9 @@ function setupPlugin(config, rejection) {
   plugin.apply(ctx, {
     marketRepoDir: join(tmpdir(), 'dsh-skills-market-test-' + Math.random().toString(36).slice(2)),
     marketSync: { syncOnStartup: false, autoSync: false },
+    // 封闭性：默认关掉 ~/.xxx/skills 自动发现，避免真实家目录影响断言；
+    // 自动发现用例显式传 executorHomeDir + autoDiscoverExecutors: true。
+    autoDiscoverExecutors: false,
     ...config,
   })
   const call = async (method, url, body) => {
@@ -266,9 +269,15 @@ test('scan skips .git and node_modules, resolves through nesting', async () => {
 
 // ── Executor sources (on-machine skills dirs, ntd source-table style) ──
 
-test('executor catalog covers known agents and no default source is read-only', () => {
-  const keys = EXECUTOR_DEFS.map((d) => d.key)
-  for (const expected of ['dsh', 'claudecode', 'zcode', 'codex', 'workbuddy', 'agents']) assert.ok(keys.includes(expected), `missing ${expected}`)
+test('executor catalog: 内置表只留约定覆盖不到的来源，key 全由目录名派生', () => {
+  // 符合 ~/.xxx/skills 规则的条目已从内置清单删除：EXECUTOR_DEFS 只剩 dsh 与约定外路径
+  assert.deepEqual(EXECUTOR_DEFS.map((d) => d.key), ['dsh', 'mimo', 'zhanlu'])
+  assert.equal(EXECUTOR_DEFS[1].sub, '.local/share/mimocode/skills')
+  assert.equal(EXECUTOR_DEFS[2].sub, '.local/share/zhanlu/skills')
+  // 无名称表：key/显示名由目录名机械派生
+  assert.equal(keyFromDotDir('.claude'), 'claude')
+  assert.equal(keyFromDotDir('.mobile-coder'), 'mobile-coder')
+  assert.equal(keyFromDotDir('.agents'), 'agents')
   // agents 根自治理键开关覆盖起不再只读（与用户库同权）；只读只来自 extraExecutors 的显式标记
   for (const def of EXECUTOR_DEFS) assert.equal(def.readOnly === true, false, `${def.key} must not be read-only`)
 })
@@ -276,25 +285,30 @@ test('executor catalog covers known agents and no default source is read-only', 
 test('GET /executors groups skills per on-machine source', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-skills-ex-'))
   try {
-    await writeSkill(join(root, 'cc'), 'grouped/foo', { name: 'foo', description: 'Hello from claude', version: '"1.0"' })
-    await writeFile(join(root, 'cc', 'grouped', 'foo', 'notes.md'), 'extra file')
-    await writeSkill(join(root, 'ag'), 'bar', { name: 'bar', description: 'From agents' })
+    // 约定家目录 fixture：.claude/.agents/.zcode 由自动发现收录（key 由目录名派生）
+    const home = join(root, 'home')
+    await writeSkill(join(home, '.claude', 'skills'), 'grouped/foo', { name: 'foo', description: 'Hello from claude', version: '"1.0"' })
+    await writeFile(join(home, '.claude', 'skills', 'grouped', 'foo', 'notes.md'), 'extra file')
+    await writeSkill(join(home, '.agents', 'skills'), 'bar', { name: 'bar', description: 'From agents' })
+    await writeSkill(join(home, '.zcode', 'skills'), 'zed', { name: 'zed', description: 'disabled source' })
     await writeSkill(join(root, 'installed'), 'mine', { name: 'mine', description: 'dsh local' })
 
     const env = setupPlugin({
       marketDirs: [join(root, 'market')],
       installedDir: join(root, 'installed'),
-      executorDirs: { claudecode: join(root, 'cc'), agents: join(root, 'ag') },
+      executorHomeDir: home,
+      autoDiscoverExecutors: true,
       disabledExecutors: ['zcode'],
     })
     const res = await env.call('GET', '/skills-management/api/executors')
     assert.equal(res.status, 200)
     const rows = res.payload.executors
     assert.equal(rows[0].key, 'dsh') // dsh row is first, rooted at installedDir
-    assert.ok(!rows.some((r) => r.key === 'zcode')) // disabledExecutors honored
+    assert.ok(!rows.some((r) => r.key === 'zcode')) // disabledExecutors honored（自动行同样适用）
 
-    const cc = rows.find((r) => r.key === 'claudecode')
-    assert.equal(cc.label, 'Claude Code')
+    const cc = rows.find((r) => r.key === 'claude')
+    assert.equal(cc.label, 'Claude') // 无名称表：显示名按目录名派生
+    assert.equal(cc.source, 'auto')
     assert.equal(cc.dirExists, true)
     assert.equal(cc.readOnly, false)
     assert.deepEqual(cc.skills.map((s) => s.name), ['grouped/foo']) // nested, frontmatter name == basename → relPath
@@ -305,8 +319,8 @@ test('GET /executors groups skills per on-machine source', async () => {
     assert.equal(ag.readOnly, false) // agents 根自治理开关覆盖起可写
     assert.deepEqual(ag.skills.map((s) => s.name), ['bar'])
 
-    const missing = rows.find((r) => r.key === 'codex') // no override, real ~/.codex may exist; only shape-check
-    assert.equal(typeof missing.dirExists, 'boolean')
+    // 目录不存在的工具没有行：纯发现驱动，不再凭空占位
+    assert.ok(!rows.some((r) => r.key === 'codex'))
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -316,24 +330,26 @@ test('symlinked skill dirs are flagged with link target and owning source', asyn
   const root = await mkdtemp(join(tmpdir(), 'dsh-skills-link-'))
   try {
     // 真实场景复刻（~/.claude/skills 过半条目链进 ~/.agents/skills 共享池）：
-    // cc 下一个链接技能 + 一个实体技能，链接目标落在 agents 根内
-    await writeSkill(join(root, 'ag'), 'pool-skill', { name: 'pool-skill', description: 'living in the agents pool' })
-    await mkdir(join(root, 'cc'), { recursive: true })
-    await symlink(join(root, 'ag', 'pool-skill'), join(root, 'cc', 'pool-skill'), 'dir')
-    await writeSkill(join(root, 'cc'), 'real-one', { name: 'real-one', description: 'a real dir' })
+    // .claude 下一个链接技能 + 一个实体技能，链接目标落在 agents 根内
+    const home = join(root, 'home')
+    await writeSkill(join(home, '.agents', 'skills'), 'pool-skill', { name: 'pool-skill', description: 'living in the agents pool' })
+    await mkdir(join(home, '.claude', 'skills'), { recursive: true })
+    await symlink(join(home, '.agents', 'skills', 'pool-skill'), join(home, '.claude', 'skills', 'pool-skill'), 'dir')
+    await writeSkill(join(home, '.claude', 'skills'), 'real-one', { name: 'real-one', description: 'a real dir' })
 
     const env = setupPlugin({
       marketDirs: [join(root, 'market')],
       installedDir: join(root, 'installed'),
-      executorDirs: { claudecode: join(root, 'cc'), agents: join(root, 'ag') },
+      executorHomeDir: home,
+      autoDiscoverExecutors: true,
     })
-    const res = await env.call('GET', '/skills-management/api/executors?executor=claudecode')
+    const res = await env.call('GET', '/skills-management/api/executors?executor=claude')
     assert.equal(res.status, 200)
     const skills = res.payload.executor.skills
     const linked = skills.find((s) => s.name === 'pool-skill')
     assert.equal(linked.isLink, true)
-    assert.ok(linked.linkTarget.endsWith(join('ag', 'pool-skill')), `linkTarget should name the pool dir, got ${linked.linkTarget}`)
-    assert.equal(linked.linkExecutor, 'Agents') // realpath 前缀命中最长根 → 来源 label
+    assert.ok(linked.linkTarget.endsWith(join('.agents', 'skills', 'pool-skill')), `linkTarget should name the pool dir, got ${linked.linkTarget}`)
+    assert.equal(linked.linkExecutor, 'Agents') // realpath 前缀命中最长根 → 来源 label（派生）
     const real = skills.find((s) => s.name === 'real-one')
     assert.equal(real.isLink, undefined) // 非链接行不带这些键
 
@@ -341,11 +357,11 @@ test('symlinked skill dirs are flagged with link target and owning source', asyn
     assert.equal(linked.description, 'living in the agents pool')
 
     // 详情接口带同样的链接字段
-    const detail = await env.call('GET', '/skills-management/api/detail?name=pool-skill&executor=claudecode')
+    const detail = await env.call('GET', '/skills-management/api/detail?name=pool-skill&executor=claude')
     assert.equal(detail.status, 200)
     assert.equal(detail.payload.isLink, true)
     assert.equal(detail.payload.linkExecutor, 'Agents')
-    assert.ok(detail.payload.linkTarget.endsWith(join('ag', 'pool-skill')))
+    assert.ok(detail.payload.linkTarget.endsWith(join('.agents', 'skills', 'pool-skill')))
 
     // agents 根里的实体同名技能不是链接
     const agRes = await env.call('GET', '/skills-management/api/executors?executor=agents')
@@ -358,27 +374,29 @@ test('symlinked skill dirs are flagged with link target and owning source', asyn
 test('executors endpoint variants: summary mode and single-source drill-in', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-skills-var-'))
   try {
-    await writeSkill(join(root, 'cc'), 'foo', { name: 'foo', description: 'one' })
-    await writeSkill(join(root, 'cc'), 'nested/bar', { name: 'bar', description: 'two' })
+    const home = join(root, 'home')
+    await writeSkill(join(home, '.claude', 'skills'), 'foo', { name: 'foo', description: 'one' })
+    await writeSkill(join(home, '.claude', 'skills'), 'nested/bar', { name: 'bar', description: 'two' })
     await writeSkill(join(root, 'installed'), 'mine', { name: 'mine', description: 'dsh' })
 
     const env = setupPlugin({
       marketDirs: [join(root, 'market')],
       installedDir: join(root, 'installed'),
-      executorDirs: { claudecode: join(root, 'cc') },
+      executorHomeDir: home,
+      autoDiscoverExecutors: true,
     })
 
     // summary mode: counts without per-skill arrays (lazy UI loading)
     const summary = await env.call('GET', '/skills-management/api/executors?mode=summary')
     assert.equal(summary.status, 200)
-    const ccSummary = summary.payload.executors.find((r) => r.key === 'claudecode')
+    const ccSummary = summary.payload.executors.find((r) => r.key === 'claude')
     assert.equal(ccSummary.skillCount, 2)
     assert.equal(ccSummary.skills, undefined)
 
     // scoped mode: one source's full list
-    const scoped = await env.call('GET', '/skills-management/api/executors?executor=claudecode')
+    const scoped = await env.call('GET', '/skills-management/api/executors?executor=claude')
     assert.equal(scoped.status, 200)
-    assert.equal(scoped.payload.executor.key, 'claudecode')
+    assert.equal(scoped.payload.executor.key, 'claude')
     // flat skill keeps frontmatter name; nested keeps its category path
     assert.deepEqual(scoped.payload.executor.skills.map((s) => s.name), ['foo', 'nested/bar'])
     assert.equal(scoped.payload.executor.skillCount, 2)
@@ -391,9 +409,16 @@ test('executors endpoint variants: summary mode and single-source drill-in', asy
   }
 })
 
-test('executor-settings sheet: GET lists all built-ins with flags, PUT applies runtime changes', async () => {
+test('executor-settings sheet: GET lists all sources with flags, PUT applies runtime changes', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-skills-sheet-'))
   try {
+    // 约定 fixture：停用/覆盖目标都必须是已发现的自动行（无目录即无行）
+    const home = join(root, 'home')
+    await writeSkill(join(home, '.zcode', 'skills'), 'z1', { name: 'z1', description: 'zcode fixture' })
+    await writeSkill(join(home, '.claude', 'skills'), 'c1', { name: 'c1', description: 'claude fixture' })
+    await writeSkill(join(home, '.kilo', 'skills'), 'k1', { name: 'k1', description: 'kilo fixture' })
+    await writeSkill(join(home, '.pi', 'skills'), 'p1', { name: 'p1', description: 'pi fixture' })
+    await writeSkill(join(home, '.codex', 'skills'), 'c2', { name: 'c2', description: 'codex fixture' })
     await writeSkill(join(root, 'cx'), 'zeds', { name: 'zeds', description: 'From runtime-overridden codex' })
     await writeSkill(join(root, 'mc'), 'local-shot', { name: 'local-shot', description: 'From custom executor' })
     await writeSkill(join(root, 'installed'), 'mine', { name: 'mine', description: 'dsh local' })
@@ -401,21 +426,24 @@ test('executor-settings sheet: GET lists all built-ins with flags, PUT applies r
     const env = setupPlugin({
       marketDirs: [join(root, 'market')],
       installedDir: join(root, 'installed'),
+      executorHomeDir: home,
+      autoDiscoverExecutors: true,
       disabledExecutors: ['zcode'], // cordis 停用：管理面板仍要列出（UI 置灰）
     })
 
-    // GET：全量内置 + 每行可编辑性标记；目录是 raw 默认值（~ 形式）
+    // GET：内置 + 自动发现行，带每行可编辑性标记
     const sheet = await env.call('GET', '/skills-management/api/executor-settings')
     assert.equal(sheet.status, 200)
     const rows = sheet.payload.executors
     assert.equal(rows[0].key, 'dsh')
     assert.equal(rows[0].locked, true)
     const zc = rows.find((r) => r.key === 'zcode')
+    assert.equal(zc.source, 'auto')
     assert.equal(zc.disabled, true)
     assert.equal(zc.managedByConfig, false)
-    assert.equal(zc.dir, '~/.zcode/skills')
-    const cc = rows.find((r) => r.key === 'claudecode')
-    assert.equal(cc.dir, '~/.claude/skills')
+    assert.ok(zc.dir.endsWith(join('.zcode', 'skills')), `zcode dir is the convention path, got ${zc.dir}`)
+    const cc = rows.find((r) => r.key === 'claude')
+    assert.ok(cc.dir.endsWith(join('.claude', 'skills')))
     assert.equal(cc.overridden, false)
     assert.ok(!rows.some((r) => r.source === 'custom'))
     assert.ok(sheet.payload.settingsFile.endsWith('settings.yaml'))
@@ -454,7 +482,7 @@ test('executor-settings PUT rejects locked/unknown/duplicate/invalid rows', asyn
       [{ dirs: {}, disabled: ['dsh'], extra: [] }, /dsh.*cannot be disabled/],
       [{ dirs: { nope: '/tmp/x' }, disabled: [], extra: [] }, /unknown executor/],
       [{ dirs: {}, disabled: [], extra: [{ key: 'Bad_Key', label: 'x', dir: '/tmp/y' }] }, /kebab/],
-      [{ dirs: {}, disabled: [], extra: [{ key: 'codex', label: 'x', dir: '/tmp/y' }] }, /already exists/],
+      [{ dirs: {}, disabled: [], extra: [{ key: 'mimo', label: 'x', dir: '/tmp/y' }] }, /already exists/],
       [{ dirs: {}, disabled: [], extra: [{ key: 'my-cli', label: 'x', dir: '' }] }, /non-empty string/],
     ]
     for (const [body, re] of cases) {
@@ -470,23 +498,27 @@ test('executor-settings PUT rejects locked/unknown/duplicate/invalid rows', asyn
 test('executor-settings cordis config wins over runtime sheet; empty PUT restores defaults', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-skills-prio-'))
   try {
+    const home = join(root, 'home')
+    await writeSkill(join(home, '.claude', 'skills'), 'convention-one', { name: 'convention-one', description: 'convention dir' })
     await writeSkill(join(root, 'cc'), 'cordis-one', { name: 'cordis-one', description: 'cordis root' })
     await writeSkill(join(root, 'runtime'), 'runtime-one', { name: 'runtime-one', description: 'runtime root' })
     const env = setupPlugin({
       marketDirs: [join(root, 'market')],
       installedDir: join(root, 'installed'),
-      executorDirs: { claudecode: join(root, 'cc') }, // cordis 静态配置
+      executorHomeDir: home,
+      autoDiscoverExecutors: true,
+      executorDirs: { claude: join(root, 'cc') }, // cordis 静态配置（key = 派生 key）
     })
     // runtime 想覆盖同一 key：被 cordis 压制
     await env.call('PUT', '/skills-management/api/executor-settings', {
-      dirs: { claudecode: join(root, 'runtime') },
+      dirs: { claude: join(root, 'runtime') },
       disabled: [],
       extra: [{ key: 'temp', label: 'Temp', dir: join(root, 'runtime') }],
     })
-    let scan = await env.call('GET', '/skills-management/api/executors?executor=claudecode')
+    let scan = await env.call('GET', '/skills-management/api/executors?executor=claude')
     assert.deepEqual(scan.payload.executor.skills.map((s) => s.name), ['cordis-one'])
     let sheet = await env.call('GET', '/skills-management/api/executor-settings')
-    assert.equal(sheet.payload.executors.find((r) => r.key === 'claudecode').managedByConfig, true)
+    assert.equal(sheet.payload.executors.find((r) => r.key === 'claude').managedByConfig, true)
     assert.equal(sheet.payload.executors.some((r) => r.key === 'temp'), true)
 
     // 恢复默认：整表清空 → runtime 自定义消失，cordis 根不受影响
@@ -495,8 +527,176 @@ test('executor-settings cordis config wins over runtime sheet; empty PUT restore
     assert.ok(!restore.payload.executors.some((r) => r.key === 'temp'))
     sheet = await env.call('GET', '/skills-management/api/executor-settings')
     assert.ok(!sheet.payload.executors.some((r) => r.key === 'temp'))
-    scan = await env.call('GET', '/skills-management/api/executors?executor=claudecode')
+    scan = await env.call('GET', '/skills-management/api/executors?executor=claude')
     assert.deepEqual(scan.payload.executor.skills.map((s) => s.name), ['cordis-one'])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+// ── 约定式自动发现（~/.xxx/skills；Windows: %USERPROFILE%\.xxx\skills）──
+
+test('discoverSkillHomes finds only dotted dirs with a skills child', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'dsh-skills-home-'))
+  try {
+    await writeSkill(join(home, '.foo', 'skills'), 'a', { name: 'a', description: 'x' })
+    await mkdir(join(home, '.bar')) // 无 skills 子目录 → 不算
+    await writeSkill(join(home, 'plain', 'skills'), 'b', { name: 'b', description: 'x' }) // 非点目录 → 不算
+    await writeSkill(join(home, '.git', 'skills'), 'c', { name: 'c', description: 'x' }) // dotfiles 仓库排除
+    await writeFile(join(home, '.file'), 'not a dir') // 点文件 → 不算
+    const found = await discoverSkillHomes(home)
+    assert.deepEqual(found.map((f) => f.name), ['.foo'])
+    assert.equal(found[0].dir, join(home, '.foo', 'skills'))
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('discoverSkillHomes follows symlinked dot dirs and skills dirs', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'dsh-skills-homelink-'))
+  const elsewhere = await mkdtemp(join(tmpdir(), 'dsh-skills-else-'))
+  try {
+    // 点目录本身是软链（Windows junction 在 Dirent 上同样报 isSymbolicLink）
+    await writeSkill(join(elsewhere, 'real', 'skills'), 'a', { name: 'a', description: 'x' })
+    await symlink(join(elsewhere, 'real'), join(home, '.linked'), 'dir')
+    // skills 子目录是软链（共享池布局）
+    await writeSkill(join(elsewhere, 'pool'), 'b', { name: 'b', description: 'x' })
+    await mkdir(join(home, '.linkskills'), { recursive: true })
+    await symlink(join(elsewhere, 'pool'), join(home, '.linkskills', 'skills'), 'dir')
+    const found = await discoverSkillHomes(home)
+    assert.deepEqual(found.map((f) => f.name), ['.linked', '.linkskills'])
+  } finally {
+    await rm(home, { recursive: true, force: true })
+    await rm(elsewhere, { recursive: true, force: true })
+  }
+})
+
+test('deriveAutoExecutors dedups taken paths and suffixes key collisions', () => {
+  const discovered = [
+    { name: '.claude', dir: '/home/u/.claude/skills' }, // 路径已被占用 → 跳过
+    { name: '.my-tool', dir: '/home/u/.my-tool/skills' },
+    { name: '.my_tool', dir: '/home/u/.my_tool/skills' }, // 派生 key 撞车 → -2
+    { name: '.日本語', dir: '/home/u/.日本語/skills' }, // 派生不出 kebab key → 跳过
+  ]
+  const rows = deriveAutoExecutors(discovered, ['/home/u/.claude/skills'], ['dsh', 'mimo'])
+  assert.deepEqual(rows.map((r) => r.key), ['my-tool', 'my-tool-2'])
+  assert.equal(rows[0].label, 'My Tool')
+  assert.equal(rows[0].source, 'auto')
+  assert.equal(rows[1].label, 'My Tool') // label 按目录原名派生，不带 key 后缀
+})
+
+test('auto-discovery adds convention dirs as executor sources (default on)', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skills-auto-'))
+  try {
+    const home = join(root, 'home')
+    await writeSkill(join(home, '.foo', 'skills'), 'bar', { name: 'bar', description: 'auto found' })
+    await writeSkill(join(home, '.claude', 'skills'), 'ccskill', { name: 'ccskill', description: 'plain auto row now' })
+    await mkdir(join(home, '.empty'), { recursive: true })
+
+    // autoDiscoverExecutors 默认即为 true；setupPlugin 基座为封闭性关掉，这里显式打开
+    const env = setupPlugin({
+      marketDirs: [join(root, 'market')],
+      installedDir: join(root, 'installed'),
+      executorHomeDir: home,
+      autoDiscoverExecutors: true,
+    })
+    const res = await env.call('GET', '/skills-management/api/executors')
+    assert.equal(res.status, 200)
+    const rows = res.payload.executors
+    const foo = rows.find((r) => r.key === 'foo')
+    assert.equal(foo.source, 'auto')
+    assert.equal(foo.label, 'Foo')
+    assert.equal(foo.dirExists, true)
+    assert.deepEqual(foo.skills.map((s) => s.name), ['bar'])
+    // .claude/skills 也是普通自动行：key/label 由目录名派生，不再有内置行
+    const cc = rows.find((r) => r.key === 'claude')
+    assert.equal(cc.source, 'auto')
+    assert.equal(cc.label, 'Claude')
+    assert.equal(cc.dirExists, true)
+    assert.deepEqual(cc.skills.map((s) => s.name), ['ccskill'])
+    assert.ok(!rows.some((r) => r.key === 'claudecode'))
+    assert.ok(!rows.some((r) => r.key === 'empty'))
+    // 目录不存在的工具没有行：纯发现驱动，不再凭空占位
+    assert.ok(!rows.some((r) => r.key === 'codex'))
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('custom executor dir claims a discovered path (no duplicate auto row)', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skills-claim-'))
+  try {
+    const home = join(root, 'home')
+    await writeSkill(join(home, '.mine', 'skills'), 'x', { name: 'x', description: 'claimed by custom' })
+    const env = setupPlugin({
+      marketDirs: [join(root, 'market')],
+      installedDir: join(root, 'installed'),
+      executorHomeDir: home,
+      autoDiscoverExecutors: true,
+      extraExecutors: [{ key: 'mine', label: 'Mine', dir: join(home, '.mine', 'skills') }],
+    })
+    const res = await env.call('GET', '/skills-management/api/executors')
+    const matches = res.payload.executors.filter((r) => r.dir.endsWith(join('.mine', 'skills')))
+    assert.equal(matches.length, 1)
+    assert.equal(matches[0].key, 'mine')
+    assert.equal(matches[0].source, 'custom')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('auto executor rows: disable via sheet; dir override accepted; key collision rejected; grandfathered disable survives deletion', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skills-autosheet-'))
+  try {
+    const home = join(root, 'home')
+    await writeSkill(join(home, '.foo', 'skills'), 'bar', { name: 'bar', description: 'auto found' })
+    const env = setupPlugin({
+      marketDirs: [join(root, 'market')],
+      installedDir: join(root, 'installed'),
+      executorHomeDir: home,
+      autoDiscoverExecutors: true,
+    })
+
+    // 管理面板投影：auto 行带标记、可停用
+    const sheet = await env.call('GET', '/skills-management/api/executor-settings')
+    const autoRow = sheet.payload.executors.find((r) => r.key === 'foo')
+    assert.equal(autoRow.source, 'auto')
+    assert.equal(autoRow.disabled, false)
+    assert.equal(autoRow.managedByConfig, false)
+
+    // 停用自动行 → 扫描即刻消失
+    const put = await env.call('PUT', '/skills-management/api/executor-settings', { dirs: {}, disabled: ['foo'], extra: [] })
+    assert.equal(put.status, 200)
+    assert.equal(put.payload.executors.find((r) => r.key === 'foo').disabled, true)
+    const scan = await env.call('GET', '/skills-management/api/executors')
+    assert.ok(!scan.payload.executors.some((r) => r.key === 'foo'))
+
+    // 自动行同样接受目录覆盖（内置表精简后，这是给约定来源改目录的常规通道）
+    await writeSkill(join(root, 'x'), 'moved', { name: 'moved', description: 'override target' })
+    const override = await env.call('PUT', '/skills-management/api/executor-settings', { dirs: { foo: join(root, 'x') }, disabled: [], extra: [] })
+    assert.equal(override.status, 200)
+    assert.equal(override.payload.executors.find((r) => r.key === 'foo').overridden, true)
+    const moved = await env.call('GET', '/skills-management/api/executors?executor=foo')
+    assert.deepEqual(moved.payload.executor.skills.map((s) => s.name), ['moved'])
+
+    // 自定义执行器 key 撞自动行 → 拒绝
+    const dup = await env.call('PUT', '/skills-management/api/executor-settings', { dirs: {}, disabled: [], extra: [{ key: 'foo', label: 'x', dir: join(root, 'y') }] })
+    assert.equal(dup.status, 400)
+    assert.match(dup.payload.error, /already exists/)
+
+    // 从未出现过的 key 仍然拒停（防笔误）
+    const ghost = await env.call('PUT', '/skills-management/api/executor-settings', { dirs: {}, disabled: ['ghost'], extra: [] })
+    assert.equal(ghost.status, 400)
+    assert.match(ghost.payload.error, /unknown executor/)
+
+    // 重新停用 foo（sheet 落一份停用记录），然后删掉目录：祖父条款保证
+    // sheet 里已有的停用条目仍能整表保存（不丢用户选择）
+    const reDisable = await env.call('PUT', '/skills-management/api/executor-settings', { dirs: {}, disabled: ['foo'], extra: [] })
+    assert.equal(reDisable.status, 200)
+    await rm(join(home, '.foo'), { recursive: true, force: true })
+    const again = await env.call('PUT', '/skills-management/api/executor-settings', { dirs: {}, disabled: ['foo'], extra: [] })
+    assert.equal(again.status, 200)
+    assert.ok(!again.payload.executors.some((r) => r.key === 'foo')) // 目录已删，投影不再列出
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -505,29 +705,31 @@ test('executor-settings cordis config wins over runtime sheet; empty PUT restore
 test('detail and file APIs accept an executor scope', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-skills-detail-'))
   try {
-    await writeSkill(join(root, 'cc'), 'peer', { name: 'peer', description: 'In claude' })
-    await writeFile(join(root, 'cc', 'peer', 'notes.md'), 'note text')
+    const home = join(root, 'home')
+    await writeSkill(join(home, '.claude', 'skills'), 'peer', { name: 'peer', description: 'In claude' })
+    await writeFile(join(home, '.claude', 'skills', 'peer', 'notes.md'), 'note text')
     await writeSkill(join(root, 'installed'), 'peer', { name: 'peer', description: 'Same name in dsh lib' })
 
     const env = setupPlugin({
       marketDirs: [join(root, 'market')],
       installedDir: join(root, 'installed'),
-      executorDirs: { claudecode: join(root, 'cc') },
+      executorHomeDir: home,
+      autoDiscoverExecutors: true,
     })
     // scoped: must see the claude copy even though dsh library shadows the name
-    const scoped = await env.call('GET', '/skills-management/api/detail?name=peer&executor=claudecode')
+    const scoped = await env.call('GET', '/skills-management/api/detail?name=peer&executor=claude')
     assert.equal(scoped.status, 200)
     assert.equal(scoped.payload.meta.description, 'In claude')
-    assert.equal(scoped.payload.executor, 'claudecode')
+    assert.equal(scoped.payload.executor, 'claude')
     assert.equal(scoped.payload.isInstalled, false)
 
     // file fetch under the same scope
-    const file = await env.callRaw('GET', '/skills-management/api/file?name=peer&executor=claudecode&path=notes.md')
+    const file = await env.callRaw('GET', '/skills-management/api/file?name=peer&executor=claude&path=notes.md')
     assert.equal(file.status, 200)
     assert.equal(file.body, 'note text')
 
     // traversal attempt inside the skill dir is rejected
-    const escape = await env.call('GET', '/skills-management/api/file?name=..%2Fpeer&executor=claudecode&path=notes.md')
+    const escape = await env.call('GET', '/skills-management/api/file?name=..%2Fpeer&executor=claude&path=notes.md')
     assert.equal(escape.status, 400)
 
     const unscoped = await env.call('GET', '/skills-management/api/detail?name=peer')
@@ -545,14 +747,16 @@ test('detail and file APIs accept an executor scope', async () => {
 test('DELETE is scoped to a source and refuses read-only ones', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-skills-del-'))
   try {
-    await writeSkill(join(root, 'cc'), 'removable', { name: 'removable', description: 'x' })
+    const home = join(root, 'home')
+    await writeSkill(join(home, '.claude', 'skills'), 'removable', { name: 'removable', description: 'x' })
     await writeSkill(join(root, 'locked'), 'protected', { name: 'protected', description: 'x' })
     await writeSkill(join(root, 'installed'), 'local', { name: 'local', description: 'x' })
 
     const env = setupPlugin({
       marketDirs: [join(root, 'market')],
       installedDir: join(root, 'installed'),
-      executorDirs: { claudecode: join(root, 'cc') },
+      executorHomeDir: home,
+      autoDiscoverExecutors: true,
       // 只读语义仍保留给显式标记的 extra 来源（agents 根自治理开关覆盖起不再只读）
       extraExecutors: [{ key: 'locked', label: 'Locked', dir: join(root, 'locked'), readOnly: true }],
     })
@@ -562,9 +766,9 @@ test('DELETE is scoped to a source and refuses read-only ones', async () => {
     assert.match(refused.payload.error, /read-only/)
     await assert.doesNotReject(stat(join(root, 'locked', 'protected')))
 
-    const removed = await env.call('DELETE', '/skills-management/api', { name: 'removable', executor: 'claudecode' })
+    const removed = await env.call('DELETE', '/skills-management/api', { name: 'removable', executor: 'claude' })
     assert.equal(removed.status, 200)
-    await assert.rejects(stat(join(root, 'cc', 'removable')))
+    await assert.rejects(stat(join(home, '.claude', 'skills', 'removable')))
     assert.equal(removed.payload.removed, 'removable')
 
     const legacy = await env.call('DELETE', '/skills-management/api', { name: 'local' }) // no executor → dsh library
@@ -582,17 +786,19 @@ test('DELETE is scoped to a source and refuses read-only ones', async () => {
 test('executor skills whose dir name ≠ frontmatter name resolve by frontmatter name', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-skills-mismatch-'))
   try {
-    await mkdir(join(root, 'wb', 'dev-expert__skillhub'), { recursive: true })
-    await writeFile(join(root, 'wb', 'dev-expert__skillhub', 'SKILL.md'),
+    const wb = join(root, 'home', '.workbuddy', 'skills') // 约定目录，key 派生即 workbuddy
+    await mkdir(join(wb, 'dev-expert__skillhub'), { recursive: true })
+    await writeFile(join(wb, 'dev-expert__skillhub', 'SKILL.md'),
       '---\nname: dev-expert\ndescription: expert skill\nversion: "1.0"\n---\nbody')
-    await writeFile(join(root, 'wb', 'dev-expert__skillhub', 'notes.md'), 'note text')
+    await writeFile(join(wb, 'dev-expert__skillhub', 'notes.md'), 'note text')
     // a matched skill alongside (dir == name) must still resolve via the direct path
-    await writeSkill(join(root, 'wb'), 'plain-tool', { name: 'plain-tool', description: 'matched' })
+    await writeSkill(wb, 'plain-tool', { name: 'plain-tool', description: 'matched' })
 
     const env = setupPlugin({
       marketDirs: [join(root, 'market')],
       installedDir: join(root, 'installed'),
-      executorDirs: { workbuddy: join(root, 'wb') },
+      executorHomeDir: join(root, 'home'),
+      autoDiscoverExecutors: true,
     })
     const call = env.call
 
@@ -623,12 +829,12 @@ test('executor skills whose dir name ≠ frontmatter name resolve by frontmatter
     // delete by frontmatter name removes the mismatched dir
     const del = await call('DELETE', '/skills-management/api', { name: 'dev-expert', executor: 'workbuddy' })
     assert.equal(del.status, 200)
-    await assert.rejects(stat(join(root, 'wb', 'dev-expert__skillhub')))
+    await assert.rejects(stat(join(wb, 'dev-expert__skillhub')))
 
     // matched skill still deletes by direct path
     const delPlain = await call('DELETE', '/skills-management/api', { name: 'plain-tool', executor: 'workbuddy' })
     assert.equal(delPlain.status, 200)
-    await assert.rejects(stat(join(root, 'wb', 'plain-tool')))
+    await assert.rejects(stat(join(wb, 'plain-tool')))
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -637,18 +843,21 @@ test('executor skills whose dir name ≠ frontmatter name resolve by frontmatter
 test('POST /install with `from` copies an executor skill into the dsh library', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-skills-copy-'))
   try {
-    await writeSkill(join(root, 'cc'), 'handy', { name: 'handy', description: 'Useful elsewhere', version: '"2.1"' })
-    await writeFile(join(root, 'cc', 'handy', 'helper.py'), '#!/usr/bin/env python3')
+    const home = join(root, 'home')
+    await writeSkill(join(home, '.claude', 'skills'), 'handy', { name: 'handy', description: 'Useful elsewhere', version: '"2.1"' })
+    await writeFile(join(home, '.claude', 'skills', 'handy', 'helper.py'), '#!/usr/bin/env python3')
+    await mkdir(join(home, '.kilo', 'skills'), { recursive: true }) // 空来源：存在但无目标技能
 
     const env = setupPlugin({
       marketDirs: [join(root, 'market')],
       installedDir: join(root, 'installed'),
-      executorDirs: { claudecode: join(root, 'cc') },
+      executorHomeDir: home,
+      autoDiscoverExecutors: true,
     })
 
-    const res = await env.call('POST', '/skills-management/api/install', { name: 'handy', from: 'claudecode' })
+    const res = await env.call('POST', '/skills-management/api/install', { name: 'handy', from: 'claude' })
     assert.equal(res.status, 201)
-    assert.equal(res.payload.installed.from, 'claudecode')
+    assert.equal(res.payload.installed.from, 'claude')
 
     const copied = join(root, 'installed', 'handy')
     await stat(join(copied, 'SKILL.md'))
@@ -656,18 +865,18 @@ test('POST /install with `from` copies an executor skill into the dsh library', 
     const names = (await env.registered.list()).map((c) => c.name)
     assert.ok(names.includes('handy'))
 
-    const dup = await env.call('POST', '/skills-management/api/install', { name: 'handy', from: 'claudecode' })
+    const dup = await env.call('POST', '/skills-management/api/install', { name: 'handy', from: 'claude' })
     assert.equal(dup.status, 400)
     assert.match(dup.payload.error, /already installed/)
 
-    const over = await env.call('POST', '/skills-management/api/install', { name: 'handy', from: 'claudecode', overwrite: true })
+    const over = await env.call('POST', '/skills-management/api/install', { name: 'handy', from: 'claude', overwrite: true })
     assert.equal(over.status, 201)
 
     const badSource = await env.call('POST', '/skills-management/api/install', { name: 'gone', from: 'kilo' })
     assert.equal(badSource.status, 400)
     assert.match(badSource.payload.error, /not found in Kilo/)
 
-    const invalidName = await env.call('POST', '/skills-management/api/install', { name: '../escape', from: 'claudecode' })
+    const invalidName = await env.call('POST', '/skills-management/api/install', { name: '../escape', from: 'claude' })
     assert.equal(invalidName.status, 400)
   } finally {
     await rm(root, { recursive: true, force: true })
@@ -906,13 +1115,13 @@ test('market settings persist through the host settings service when present', a
     // executor sheet：全量提交 = unset 后 set（避免深层 merge 残留已删除的键）
     updates.length = 0; mutations.length = 0
     const ex = await call('PUT', '/skills-management/api/executor-settings', {
-      dirs: { claudecode: '/tmp/cc' }, disabled: [], extra: [{ key: 'mine', label: 'Mine', dir: '/tmp/mine' }],
+      dirs: { mimo: '/tmp/cc' }, disabled: [], extra: [{ key: 'mine', label: 'Mine', dir: '/tmp/mine' }],
     })
     assert.equal(mutations.length, 1)
     assert.deepEqual(mutations[0][0], { op: 'unset', path: ['executorSheet'] })
     assert.deepEqual(mutations[0][1].op, 'set')
     assert.deepEqual(mutations[0][1].path, ['executorSheet'])
-    assert.deepEqual(mutations[0][1].value, { dirs: { claudecode: '/tmp/cc' }, disabled: [], extra: [{ key: 'mine', label: 'Mine', dir: '/tmp/mine' }] })
+    assert.deepEqual(mutations[0][1].value, { dirs: { mimo: '/tmp/cc' }, disabled: [], extra: [{ key: 'mine', label: 'Mine', dir: '/tmp/mine' }] })
     assert.ok(ex)
   } finally {
     await rm(root, { recursive: true, force: true })
@@ -1078,13 +1287,15 @@ test('list and detail endpoints carry tokens/chars on rows', async () => {
 test('executor drill-in rows carry tokens/chars too', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-skills-usage-ex-'))
   try {
-    await writeSkill(join(root, 'cc'), 'foo', { name: 'foo', description: 'Executor skill desc' })
+    const home = join(root, 'home')
+    await writeSkill(join(home, '.claude', 'skills'), 'foo', { name: 'foo', description: 'Executor skill desc' })
     const env = setupPlugin({
       marketDirs: [join(root, 'market')],
       installedDir: join(root, 'installed'),
-      executorDirs: { claudecode: join(root, 'cc') },
+      executorHomeDir: home,
+      autoDiscoverExecutors: true,
     })
-    const scoped = await env.call('GET', '/skills-management/api/executors?executor=claudecode')
+    const scoped = await env.call('GET', '/skills-management/api/executors?executor=claude')
     assert.equal(scoped.status, 200)
     const foo = scoped.payload.executor.skills.find((s) => s.name === 'foo')
     assert.equal(typeof foo.tokens, 'number')
