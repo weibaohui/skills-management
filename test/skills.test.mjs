@@ -76,6 +76,13 @@ async function writeSkill(base, rel, meta) {
   await writeFile(join(base, rel, 'SKILL.md'), `---\n${front}\n---\nbody of ${rel}`)
 }
 
+// 测试封闭性：DSH_AGENTS_HOME 会把 agents 池根指到真实目录，涉池用例先摘除再还原
+function stashAgentsHome() {
+  const saved = process.env.DSH_AGENTS_HOME
+  delete process.env.DSH_AGENTS_HOME
+  return () => { if (saved !== undefined) process.env.DSH_AGENTS_HOME = saved }
+}
+
 test('plugin exports the host-plane contract', () => {
   assert.equal(plugin.name, 'skills-management')
   // 静态注入：settings（token/市场设置持久化）+ agents/agentDefaultModel/sessions（分享任务进程内执行与打开对话）
@@ -883,6 +890,81 @@ test('POST /install with `from` copies an executor skill into the dsh library', 
   }
 })
 
+test('POST /install-to copies a skill into multiple executor dirs with per-target isolation', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skills-installto-'))
+  const restoreEnv = stashAgentsHome()
+  try {
+    const home = join(root, 'home')
+    await writeSkill(join(home, '.claude', 'skills'), 'multi', { name: 'multi', description: 'install everywhere' })
+    await writeFile(join(home, '.claude', 'skills', 'multi', 'helper.py'), '# py')
+    await mkdir(join(home, '.codex', 'skills'), { recursive: true }) // 可写目标
+    await writeSkill(join(home, '.kilo', 'skills'), 'multi', { name: 'multi', description: 'already here' }) // 冲突目标
+    await writeSkill(join(root, 'locked'), 'ro', { name: 'ro', description: 'read-only source' })
+    await writeSkill(join(root, 'market', 'repo'), 'mkt', { name: 'mkt', description: 'from market' })
+    // .pi 目录不存在 → 自动发现根本没有 pi 行（unknown executor）；
+    // 目录缺失拒绝由自定义行（根不存在）覆盖
+    const env = setupPlugin({
+      marketDirs: [join(root, 'market')],
+      installedDir: join(root, 'installed'),
+      executorHomeDir: home,
+      autoDiscoverExecutors: true,
+      trashDir: join(root, 'trash'),
+      extraExecutors: [
+        { key: 'locked', label: 'Locked', dir: join(root, 'locked'), readOnly: true },
+        { key: 'ghost', label: 'Ghost', dir: join(root, 'ghost-missing') },
+      ],
+    })
+    const post = (body) => env.call('POST', '/skills-management/api/install-to', body)
+
+    const res = await post({ name: 'multi', from: 'claude', targets: ['codex', 'kilo', 'pi', 'ghost', 'locked', 'dsh', 'nope'] })
+    assert.equal(res.status, 200)
+    const byKey = Object.fromEntries(res.payload.results.map((r) => [r.key, r]))
+    assert.equal(byKey.codex.ok, true)
+    assert.ok(byKey.codex.path.endsWith(join('.codex', 'skills', 'multi')))
+    assert.equal(byKey.kilo.ok, false)
+    assert.match(byKey.kilo.error, /already exists/)
+    assert.equal(byKey.pi.ok, false)
+    assert.match(byKey.pi.error, /unknown executor/, '没装目录的工具没有行（纯发现驱动）')
+    assert.equal(byKey.ghost.ok, false)
+    assert.match(byKey.ghost.error, /not found/)
+    assert.equal(byKey.locked.ok, false)
+    assert.match(byKey.locked.error, /read-only/)
+    assert.equal(byKey.nope.ok, false)
+    assert.match(byKey.nope.error, /unknown executor/)
+    // dsh 是安装对话框的默认目标：与默认安装按钮同路（copyIntoLibrary + invalidate）
+    assert.equal(byKey.dsh.ok, true)
+    await stat(join(root, 'installed', 'multi', 'SKILL.md'))
+    assert.ok(env.getInvalidations() >= 1, '装进 dsh 库触发注册表刷新')
+    // 成功的目标文件齐全（含附加文件），冲突目标原样保留
+    await stat(join(home, '.codex', 'skills', 'multi', 'SKILL.md'))
+    await stat(join(home, '.codex', 'skills', 'multi', 'helper.py'))
+    assert.equal((await readFile(join(home, '.kilo', 'skills', 'multi', 'SKILL.md'), 'utf8')).includes('already here'), true)
+
+    // overwrite: 冲突目标被替换，旧版进回收站
+    const over = await post({ name: 'multi', from: 'claude', targets: ['kilo'], overwrite: true })
+    assert.equal(over.payload.results[0].ok, true)
+    assert.equal((await readFile(join(home, '.kilo', 'skills', 'multi', 'SKILL.md'), 'utf8')).includes('install everywhere'), true)
+    const trashList = await env.call('GET', '/skills-management/api/trash')
+    assert.equal(trashList.payload.entries.some((e) => e.name === 'multi' && e.executorKey === 'kilo'), true, '被覆盖的旧版进回收站')
+
+    // 市场来源（from 缺省）+ 嵌套名按叶子目录名落地
+    const mkt = await post({ name: 'repo/mkt', targets: ['codex'] })
+    assert.equal(mkt.status, 200)
+    assert.equal(mkt.payload.results[0].ok, true)
+    await stat(join(home, '.codex', 'skills', 'mkt', 'SKILL.md'))
+
+    // 参数校验
+    assert.equal((await post({ name: '', targets: ['codex'] })).status, 400)
+    assert.equal((await post({ name: 'multi', from: 'claude', targets: [] })).status, 400)
+    const gone = await post({ name: 'ghost', from: 'claude', targets: ['codex'] })
+    assert.equal(gone.status, 400)
+    assert.match(gone.payload.error, /not found/)
+  } finally {
+    restoreEnv()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 // ── 回收站（删除暂存）──
 
 test('DELETE moves the skill into the trash; restore puts it back at the original dir', async () => {
@@ -1099,6 +1181,210 @@ test('config.trash === false restores permanent delete', async () => {
     assert.equal(del.payload.trashId, undefined) // 永久删除不进回收站
     assert.equal((await env.call('GET', '/skills-management/api/trash')).payload.enabled, false)
   } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+// ── 迁移到 agents 共享池（原位置留链接）──
+
+test('migrate-to-pool moves the skill into ~/.agents/skills and leaves a link', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skills-migrate-'))
+  const restoreEnv = stashAgentsHome()
+  try {
+    const home = join(root, 'home')
+    await writeSkill(join(home, '.claude', 'skills'), 'foo', { name: 'foo', description: 'migrate me' })
+    await writeFile(join(home, '.claude', 'skills', 'foo', 'helper.py'), '# py')
+    const env = setupPlugin({
+      marketDirs: [join(root, 'market')],
+      installedDir: join(root, 'installed'),
+      executorHomeDir: home,
+      autoDiscoverExecutors: true,
+    })
+
+    const res = await env.call('POST', '/skills-management/api/migrate-to-pool', { name: 'foo', executor: 'claude' })
+    assert.equal(res.status, 200)
+    assert.equal(res.payload.migrated.executor, 'claude')
+    assert.ok(res.payload.migrated.poolDir.endsWith(join('.agents', 'skills', 'foo')))
+
+    // 实体进池（文件齐全），原位置变链接
+    await stat(join(home, '.agents', 'skills', 'foo', 'SKILL.md'))
+    await stat(join(home, '.agents', 'skills', 'foo', 'helper.py'))
+    assert.equal((await lstat(join(home, '.claude', 'skills', 'foo'))).isSymbolicLink(), true)
+
+    // 两来源列表：claude 行是链接（标注 → Agents），agents 行是实体
+    const cc = await env.call('GET', '/skills-management/api/executors?executor=claude')
+    const linked = cc.payload.executor.skills.find((s) => s.name === 'foo')
+    assert.equal(linked.isLink, true)
+    assert.equal(linked.linkExecutor, 'Agents')
+    const ag = await env.call('GET', '/skills-management/api/executors?executor=agents')
+    assert.deepEqual(ag.payload.executor.skills.map((s) => s.name), ['foo'])
+    assert.equal(ag.payload.executor.skills[0].isLink, undefined)
+    // 链接后 agents 钻取带上反向链接（key + 链接在该来源下的 relPath）
+    assert.deepEqual(ag.payload.executor.skills[0].linkedBy, [{ key: 'claude', name: 'foo' }])
+
+    // 详情按原路径仍可读（链接跟随），且标注已在池内
+    const detail = await env.call('GET', '/skills-management/api/detail?name=foo&executor=claude')
+    assert.equal(detail.status, 200)
+    assert.equal(detail.payload.isLink, true)
+    assert.equal(detail.payload.inPool, true)
+  } finally {
+    restoreEnv()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('migrate-to-pool guards: link / pool member / existing target / read-only / unknown', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skills-miguard-'))
+  const restoreEnv = stashAgentsHome()
+  try {
+    const home = join(root, 'home')
+    await writeSkill(join(home, '.agents', 'skills'), 'pooled', { name: 'pooled', description: 'in pool' })
+    await writeSkill(join(home, '.agents', 'skills'), 'taken', { name: 'taken', description: 'occupied name' })
+    await mkdir(join(home, '.claude', 'skills'), { recursive: true })
+    await symlink(join(home, '.agents', 'skills', 'pooled'), join(home, '.claude', 'skills', 'linked'), 'dir')
+    await writeSkill(join(home, '.claude', 'skills'), 'taken', { name: 'taken', description: 'clashes with pool' })
+    await writeSkill(join(root, 'locked'), 'ro', { name: 'ro', description: 'read-only source' })
+    const env = setupPlugin({
+      marketDirs: [join(root, 'market')],
+      installedDir: join(root, 'installed'),
+      executorHomeDir: home,
+      autoDiscoverExecutors: true,
+      extraExecutors: [{ key: 'locked', label: 'Locked', dir: join(root, 'locked'), readOnly: true }],
+    })
+    const post = (body) => env.call('POST', '/skills-management/api/migrate-to-pool', body)
+
+    const isLink = await post({ name: 'linked', executor: 'claude' })
+    assert.equal(isLink.status, 400)
+    assert.match(isLink.payload.error, /already a link/)
+
+    const inPool = await post({ name: 'pooled', executor: 'agents' })
+    assert.equal(inPool.status, 400)
+    assert.match(inPool.payload.error, /already in the agents pool/)
+
+    const clash = await post({ name: 'taken', executor: 'claude' })
+    assert.equal(clash.status, 400)
+    assert.match(clash.payload.error, /already has 'taken'/)
+
+    const ro = await post({ name: 'ro', executor: 'locked' })
+    assert.equal(ro.status, 400)
+    assert.match(ro.payload.error, /read-only/)
+
+    const unknown = await post({ name: 'x', executor: 'nope' })
+    assert.equal(unknown.status, 400)
+    assert.match(unknown.payload.error, /unknown executor/)
+
+    const missing = await post({ name: 'ghost', executor: 'claude' })
+    assert.equal(missing.status, 400)
+    assert.match(missing.payload.error, /not found/)
+
+    // 守卫全部拒绝后，原目录都还在
+    await stat(join(home, '.claude', 'skills', 'taken', 'SKILL.md'))
+    assert.equal((await env.call('GET', '/skills-management/api/trash')).payload.entries.length, 0, '守卫拒绝不进回收站')
+  } finally {
+    restoreEnv()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('migrate from the dsh library (no executor) invalidates the registry', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skills-migdsh-'))
+  const restoreEnv = stashAgentsHome()
+  try {
+    const home = join(root, 'home')
+    await writeSkill(join(root, 'installed'), 'lib-skill', { name: 'lib-skill', description: 'in dsh lib' })
+    const env = setupPlugin({
+      marketDirs: [join(root, 'market')],
+      installedDir: join(root, 'installed'),
+      executorHomeDir: home,
+      autoDiscoverExecutors: true,
+    })
+    const res = await env.call('POST', '/skills-management/api/migrate-to-pool', { name: 'lib-skill' })
+    assert.equal(res.status, 200)
+    assert.equal(res.payload.migrated.executor, 'dsh')
+    assert.ok(env.getInvalidations() >= 1, 'dsh 库迁移触发注册表刷新')
+    assert.equal((await lstat(join(root, 'installed', 'lib-skill'))).isSymbolicLink(), true)
+    await stat(join(home, '.agents', 'skills', 'lib-skill', 'SKILL.md'))
+  } finally {
+    restoreEnv()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('migrate uses the dir basename when it differs from the frontmatter name', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skills-migbase-'))
+  const restoreEnv = stashAgentsHome()
+  try {
+    const home = join(root, 'home')
+    const wb = join(home, '.workbuddy', 'skills')
+    await mkdir(join(wb, 'dev-x__s'), { recursive: true })
+    await writeFile(join(wb, 'dev-x__s', 'SKILL.md'), '---\nname: dev-x\ndescription: mismatched dir\n---\nbody')
+    const env = setupPlugin({
+      marketDirs: [join(root, 'market')],
+      installedDir: join(root, 'installed'),
+      executorHomeDir: home,
+      autoDiscoverExecutors: true,
+    })
+    const res = await env.call('POST', '/skills-management/api/migrate-to-pool', { name: 'dev-x', executor: 'workbuddy' })
+    assert.equal(res.status, 200)
+    // 池里目录沿用原目录名；frontmatter 名解析在两个来源下都仍工作
+    await stat(join(home, '.agents', 'skills', 'dev-x__s', 'SKILL.md'))
+    assert.equal((await lstat(join(wb, 'dev-x__s'))).isSymbolicLink(), true)
+    const wbList = await env.call('GET', '/skills-management/api/executors?executor=workbuddy')
+    assert.deepEqual(wbList.payload.executor.skills.map((s) => s.name), ['dev-x'])
+    const agDetail = await env.call('GET', '/skills-management/api/detail?name=dev-x&executor=agents')
+    assert.equal(agDetail.status, 200)
+  } finally {
+    restoreEnv()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('agents drill-in annotates linkedBy with the executors linking each pooled skill', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skills-backlinks-'))
+  const restoreEnv = stashAgentsHome()
+  try {
+    const home = join(root, 'home')
+    await writeSkill(join(home, '.agents', 'skills'), 'pooled', { name: 'pooled', description: 'in pool' })
+    await writeSkill(join(home, '.agents', 'skills'), 'lonely', { name: 'lonely', description: 'nobody links me' })
+    for (const [executor, linkName] of [['.claude', 'a'], ['.zcode', 'b']]) {
+      await mkdir(join(home, executor, 'skills'), { recursive: true })
+      await symlink(join(home, '.agents', 'skills', 'pooled'), join(home, executor, 'skills', linkName), 'dir')
+    }
+    await writeSkill(join(home, '.kilo', 'skills'), 'real', { name: 'real', description: 'real dir, not a link' })
+    const env = setupPlugin({
+      marketDirs: [join(root, 'market')],
+      installedDir: join(root, 'installed'),
+      executorHomeDir: home,
+      autoDiscoverExecutors: true,
+    })
+
+    const ag = await env.call('GET', '/skills-management/api/executors?executor=agents')
+    const pooled = ag.payload.executor.skills.find((s) => s.name === 'pooled')
+    // [{ key, name }]：name 是链接在该来源下的 relPath（与池内名不同也要能寻址）
+    assert.deepEqual(pooled.linkedBy, [{ key: 'claude', name: 'a' }, { key: 'zcode', name: 'b' }])
+    const lonely = ag.payload.executor.skills.find((s) => s.name === 'lonely')
+    assert.equal(lonely.linkedBy, undefined) // 无人链接不带该字段
+
+    // 非池来源的钻取不带 linkedBy；汇总模式也没有
+    const cc = await env.call('GET', '/skills-management/api/executors?executor=claude')
+    assert.equal(cc.payload.executor.skills[0].linkedBy, undefined)
+    const summary = await env.call('GET', '/skills-management/api/executors?mode=summary')
+    assert.equal(summary.payload.executors.find((r) => r.key === 'agents').skills, undefined)
+    // summary 行带 isPool 标记（客户端合并刷新时池行不按计数保留 skills）
+    assert.equal(summary.payload.executors.find((r) => r.key === 'agents').isPool, true)
+    assert.equal(summary.payload.executors.find((r) => r.key === 'claude').isPool, undefined)
+
+    // 按 linkedBy 记录的 relPath 删除链接（批量删链接对话框走的就是这条路）：
+    // 链接进回收站，池中本体不动，反向链接索引随即少一个来源
+    const del = await env.call('DELETE', '/skills-management/api', { name: 'a', executor: 'claude' })
+    assert.equal(del.status, 200)
+    assert.equal(typeof del.payload.trashId, 'string')
+    await assert.rejects(stat(join(home, '.claude', 'skills', 'a')))
+    await stat(join(home, '.agents', 'skills', 'pooled', 'SKILL.md'))
+    const ag2 = await env.call('GET', '/skills-management/api/executors?executor=agents')
+    assert.deepEqual(ag2.payload.executor.skills.find((s) => s.name === 'pooled').linkedBy, [{ key: 'zcode', name: 'b' }])
+  } finally {
+    restoreEnv()
     await rm(root, { recursive: true, force: true })
   }
 })

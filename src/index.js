@@ -824,6 +824,11 @@ module.exports = {
     // 执行器根的归属家目录：默认 os.homedir()（Windows 下即 %USERPROFILE%）。
     // executorHomeDir 主要服务测试——把内置默认根与自动发现一起指到临时家目录。
     const executorHome = () => (config.executorHomeDir !== undefined ? resolve(expandTilde(String(config.executorHomeDir))) : homedir())
+    // agents 共享池根：与 invocation 路由同款 DSH_AGENTS_HOME 解析，但家目录走
+    // executorHome（测试可指到临时目录；生产二者同为 os.homedir()）。
+    const agentsPoolRoot = () => process.env.DSH_AGENTS_HOME !== undefined && process.env.DSH_AGENTS_HOME !== ''
+      ? join(resolve(expandTilde(process.env.DSH_AGENTS_HOME)), 'skills')
+      : join(executorHome(), '.agents', 'skills')
     const autoDiscover = config.autoDiscoverExecutors !== false // 默认开：扫 ~/.xxx/skills
     const executorSettingsOverrides = {} // 进程内兜底：写回缺席/失败时保本次运行一致
     const runtimeSheet = () => {
@@ -985,7 +990,13 @@ module.exports = {
      */
     const rootRealMemo = new Map()
     const realRoot = async (p) => {
-      if (!rootRealMemo.has(p)) rootRealMemo.set(p, await fsP.realpath(p).catch(() => p))
+      // 失败（路径尚不存在）不缓存——之后目录可能被创建（如首次迁入共享池），
+      // 缓存否定结果会让后续的 realpath 前缀比较永久失手
+      if (!rootRealMemo.has(p)) {
+        const real = await fsP.realpath(p).catch(() => undefined)
+        if (real === undefined) return p
+        rootRealMemo.set(p, real)
+      }
       return rootRealMemo.get(p)
     }
     const linkExecutorLabel = async (target) => {
@@ -1013,6 +1024,9 @@ module.exports = {
       if (!countsOnly) summary.skills = []
       try { await fsP.access(row.root) } catch { return summary }
       summary.dirExists = true
+      // 池行标记：客户端合并刷新时，池行的 skills 不能按计数保留——
+      // 反向链接（linkedBy）变化不改变技能计数
+      if (await isPoolRow(row)) summary.isPool = true
       for (const entry of await scanRoot(row.root)) {
         try {
           const read = await readSkillEntry(entry)
@@ -1088,6 +1102,56 @@ module.exports = {
       return copyIntoLibrary(sourceDir, installDirName(fullName), overwrite)
     }
 
+    /**
+     * 批量安装到其他执行器：把技能目录复制进每个目标来源的 skills 根。
+     * 逐目标隔离结果（一个失败不拖累整批）。守卫：dsh 走默认安装按钮、
+     * 只读来源拒绝、目标根不存在拒绝（不在没装该工具的机器上凭空造
+     * ~/.xxx/skills）、目标已有同名技能且无 overwrite 拒绝。
+     */
+    async function installToExecutors(fullName, from, targets, overwrite) {
+      let sourceDir
+      if (typeof from === 'string' && from !== '' && from !== 'market') {
+        const row = findExecutorRow(from)
+        if (row === undefined) throw new Error(`unknown executor '${from}'`)
+        sourceDir = await findDirUnderRoot(row.root, fullName, `${row.label} (${row.key})`)
+      } else {
+        for (const root of marketDirs()) {
+          try { sourceDir = await resolveSkillDir(root, fullName); break }
+          catch (e) { if (!String(e && e.message).includes('not found')) throw e }
+        }
+        if (sourceDir === undefined) throw new Error(`skill '${fullName}' not found in market`)
+      }
+      const shortName = installDirName(fullName)
+      const results = []
+      for (const key of targets) {
+        const row = findExecutorRow(key)
+        if (row === undefined) { results.push({ key, ok: false, error: `unknown executor '${key}'` }); continue }
+        if (row.key === 'dsh') {
+          // dsh 库是安装对话框的默认目标：走与默认安装按钮相同的 copyIntoLibrary
+          //（自带已装守卫 + 注册表刷新）
+          try {
+            await copyIntoLibrary(sourceDir, shortName, overwrite)
+            results.push({ key, ok: true, path: displayPath(join(installedDir, shortName)) })
+          } catch (e) { results.push({ key, ok: false, error: String(e && e.message || e) }) }
+          continue
+        }
+        if (row.readOnly) { results.push({ key, ok: false, error: 'read-only source' }); continue }
+        if (!(await pathExists(row.root))) { results.push({ key, ok: false, error: `directory not found: ${displayPath(row.root)}` }); continue }
+        const target = join(row.root, shortName)
+        if (await pathExists(target)) {
+          if (!overwrite) { results.push({ key, ok: false, error: `already exists: ${displayPath(target)}` }); continue }
+          // 覆盖 = 旧版进回收站再放新版（与删除语义一致，可恢复）
+          if (trashEnabled) await moveToTrash(trashDir, target, shortName, row.key)
+          else await fsP.rm(target, { recursive: true, force: true })
+        }
+        try {
+          await copyDir(sourceDir, target)
+          results.push({ key, ok: true, path: displayPath(target) })
+        } catch (e) { results.push({ key, ok: false, error: String(e && e.message || e) }) }
+      }
+      return results
+    }
+
     async function deleteSkill(name, executorKey) {
       if (!validSkillName(name)) throw new Error('invalid skill name')
       const key = executorKey === undefined || executorKey === null || executorKey === '' ? 'dsh' : executorKey
@@ -1102,6 +1166,76 @@ module.exports = {
         : (await fsP.rm(target, { recursive: true }), null)
       if (key === 'dsh') invalidate()
       return meta !== null ? { removed: name, executor: key, trashId: meta.id } : { removed: name, executor: key }
+    }
+
+    /**
+     * 迁移到 agents 共享池：实体目录移入 <pool>/<目录 basename>，原位置留链接
+     * （Windows 建 junction——不需要管理员权限；POSIX 建 dir symlink）。守卫：
+     * 只读来源 / 已是链接 / 已在池里 / 池里同名已存在，一律拒绝不静默覆盖。
+     * 建链失败尽力把目录移回原位（回滚失败则抛原始错误，日志留痕）。
+     */
+    async function migrateToPool(name, executorKey) {
+      if (!validSkillName(name)) throw new Error('invalid skill name')
+      const key = executorKey === undefined || executorKey === null || executorKey === '' ? 'dsh' : executorKey
+      const row = findExecutorRow(key)
+      if (row === undefined) throw new Error(`unknown executor '${key}'`)
+      if (row.readOnly) throw new Error(`source '${key}' is read-only; cannot migrate skills there`)
+      const sourceDir = await resolveSkillDirByName(row.root, name)
+      if (sourceDir === undefined) throw new Error(`skill '${name}' not found in ${row.label} (${row.key})`)
+      if ((await fsP.lstat(sourceDir)).isSymbolicLink()) throw new Error(`skill '${name}' is already a link; nothing to migrate`)
+      const pool = agentsPoolRoot()
+      const realPool = await realRoot(pool)
+      const realSource = await fsP.realpath(sourceDir)
+      if (realSource === realPool || realSource.startsWith(realPool + sep)) throw new Error(`skill '${name}' is already in the agents pool`)
+      const target = join(pool, basename(sourceDir))
+      if (await pathExists(target)) throw new Error(`pool already has '${basename(sourceDir)}': ${displayPath(target)}`)
+      await fsP.mkdir(pool, { recursive: true })
+      await movePath(sourceDir, target)
+      try {
+        await fsP.symlink(target, sourceDir, process.platform === 'win32' ? 'junction' : 'dir')
+      } catch (e) {
+        await movePath(target, sourceDir).catch((rollback) => ctx.logger.warn(`skills-management: migrate rollback failed: ${rollback && rollback.message}`))
+        throw e
+      }
+      if (key === 'dsh') invalidate()
+      return { name, executor: key, poolDir: displayPath(target), link: displayPath(sourceDir) }
+    }
+
+    /** 该行的根是否就是 agents 共享池（realpath 比较，含自定义行指向池的情形）。 */
+    const isPoolRow = async (row) => typeof row.root === 'string' && row.root !== ''
+      && (await realRoot(resolve(row.root))) === (await realRoot(agentsPoolRoot()))
+
+    /**
+     * 反向链接索引：池里每个技能目录（realpath）→ 链接它的来源 Map<key, relPath>。
+     * relPath 是链接条目在那个来源根下的相对路径（可能与池内名不同，删除该链接
+     * 需要按它寻址）。扫全部其它来源根，收集 realpath 落在池内的链接条目；
+     * 链接目标在扫描期已解析（scanSkillDirs 的 linkTarget），这里只做前缀归属。
+     */
+    async function poolBacklinks(realPool) {
+      const byTarget = new Map()
+      for (const other of computeExecutorRows()) {
+        if (typeof other.root !== 'string' || other.root === '') continue
+        if ((await realRoot(resolve(other.root))) === realPool) continue // 池自身不算链接者
+        for (const entry of await scanRoot(other.root)) {
+          if (entry.isLink !== true || typeof entry.linkTarget !== 'string') continue
+          if (entry.linkTarget !== realPool && !entry.linkTarget.startsWith(realPool + sep)) continue
+          let set = byTarget.get(entry.linkTarget)
+          if (set === undefined) { set = new Map(); byTarget.set(entry.linkTarget, set) }
+          if (!set.has(other.key)) set.set(other.key, entry.relPath)
+        }
+      }
+      return byTarget
+    }
+
+    /** 给池行的技能列表挂 linkedBy：[{ key, name（链接在该来源下的 relPath） }]，按 key 排序。 */
+    const attachBacklinks = async (row, skills) => {
+      const byTarget = await poolBacklinks(await realRoot(resolve(row.root)))
+      for (const s of skills) {
+        const set = byTarget.get(await realRoot(join(row.root, s.relPath)))
+        if (set !== undefined && set.size > 0) {
+          s.linkedBy = [...set.entries()].map(([key, name]) => ({ key, name })).sort((a, b) => (a.key < b.key ? -1 : 1))
+        }
+      }
     }
 
     // ── Market sync state (persisted next to the repo root) ──
@@ -1532,7 +1666,10 @@ module.exports = {
             if (scopeKey !== null && scopeKey !== '') {
               const scoped = findExecutorRow(scopeKey)
               if (scoped === undefined) throw new Error(`unknown executor '${scopeKey}'`)
-              sendJson(res, 200, { executor: await scanExecutor(scoped) })
+              const summary = await scanExecutor(scoped)
+              // 池行钻取：给每个技能挂 linkedBy（哪些来源链接了它）
+              if (summary.skills !== undefined && (await isPoolRow(scoped))) await attachBacklinks(scoped, summary.skills)
+              sendJson(res, 200, { executor: summary })
               return
             }
             const countsOnly = query.get('mode') === 'summary'
@@ -1577,7 +1714,12 @@ module.exports = {
               const lst = await fsP.lstat(located.dir)
               if (lst.isSymbolicLink()) { linked = true; linkReal = await fsP.realpath(located.dir) }
             } catch {}
-            sendJson(res, 200, { name, shortName: basename(name), dir: displayPath(located.dir), executor: located.executorKey, isInstalled: located.isInstalled, ...(await linkFields(linked, linkReal)), content: body, contentWithMeta: content, meta, files, fileCount, totalSize, modifiedAt: files[0]?.modifiedAt, ...usage })
+            // 是否已在 agents 共享池内（realpath 比较，链接技能按目标算）+ 池根展示路径
+            const pool = agentsPoolRoot()
+            const realPool = await realRoot(pool)
+            const realDir = linked && linkReal !== undefined ? linkReal : await fsP.realpath(located.dir).catch(() => resolve(located.dir))
+            const inPool = realDir === realPool || realDir.startsWith(realPool + sep)
+            sendJson(res, 200, { name, shortName: basename(name), dir: displayPath(located.dir), executor: located.executorKey, isInstalled: located.isInstalled, ...(await linkFields(linked, linkReal)), inPool, poolDir: displayPath(pool), content: body, contentWithMeta: content, meta, files, fileCount, totalSize, modifiedAt: files[0]?.modifiedAt, ...usage })
             return
           }
 
@@ -1599,6 +1741,28 @@ module.exports = {
               ? await installFromExecutor(body.from, body.name, body.overwrite === true)
               : await installMarketSkill(body.name, body.overwrite === true)
             sendJson(res, 201, { installed: { ...result, from: typeof body.from === 'string' && body.from !== '' && body.from !== 'market' ? body.from : 'market' } })
+            return
+          }
+
+          // POST /skills-management/api/migrate-to-pool {name, executor?} → 移入 agents
+          // 共享池并在原位置留链接（executor 缺省 = dsh 用户库）
+          if (req.method === 'POST' && apiPath.endsWith('/skills-management/api/migrate-to-pool')) {
+            const body = await readJsonBody(req)
+            await refreshAutoRows()
+            if (typeof body.name !== 'string' || body.name === '') { sendJson(res, 400, { error: 'body must provide name' }); return }
+            sendJson(res, 200, { migrated: await migrateToPool(body.name, typeof body.executor === 'string' ? body.executor : undefined) })
+            return
+          }
+
+          // POST /skills-management/api/install-to {name, from?, targets[], overwrite?}
+          // → 批量安装到其他执行器的 skills 目录（逐目标隔离结果）
+          if (req.method === 'POST' && apiPath.endsWith('/skills-management/api/install-to')) {
+            const body = await readJsonBody(req)
+            await refreshAutoRows()
+            if (typeof body.name !== 'string' || body.name === '') { sendJson(res, 400, { error: 'body must provide name' }); return }
+            if (!Array.isArray(body.targets) || body.targets.length === 0) { sendJson(res, 400, { error: 'body must provide a non-empty targets array' }); return }
+            const results = await installToExecutors(body.name, typeof body.from === 'string' ? body.from : undefined, body.targets.map(String), body.overwrite === true)
+            sendJson(res, 200, { results })
             return
           }
 

@@ -653,12 +653,7 @@ window.__ModuleLoader__.load({
       mdCodeUnwrap: '取消换行',
       mdFootnotes: '脚注',
       installFrom: '从 {label} 安装',
-      installTitle: '安装',
-      installOk: '确认安装',
       cancel: '取消',
-      installedToast: '已装入 DSH 技能库',
-      marketLabel: '市场',
-      installConfirm: '即将把「{name}」从「{label}」安装到 DSH 技能库，安装后可通过 DSH 的 skill 工具调用。',
       installFromMarket: '从市场安装 {name}？',
       deleteTitle: '删除技能',
       deleteConfirm: '即将从「{where}」删除技能「{name}」，删除后移入回收站，可随时恢复。',
@@ -681,6 +676,25 @@ window.__ModuleLoader__.load({
       deletedForeverToast: '已彻底删除',
       emptiedTrashToast: '回收站已清空',
       movedToTrash: '已移入回收站',
+      migrateBtn: '迁至共享池',
+      migrateTitle: '迁至 Agents 共享池',
+      migrateConfirm: '将把「{name}」移动到 {pool}，并在原位置留下链接；各来源仍可正常使用该技能。',
+      migratedToast: '已迁至共享池，原位置已留链接',
+      linkedByTitle: '链接来源：{names}',
+      linkedByCount: '链接 {n} 个',
+      linkedByDialogTitle: '链接来源（{n}）',
+      linkedByDialogHint: '这些执行器的 skills 目录下有指向该技能的链接。勾选后可批量删除链接（移入回收站），池中的技能本体不受影响。',
+      deleteSelectedBtn: '删除选中（{n}）',
+      deletedLinksToast: '已删除 {n} 个链接（已移入回收站）',
+      selectAllBtn: '全选',
+      invertSelectionBtn: '反选',
+      installMoreBtn: '更多',
+      installToTitle: '安装技能',
+      installToHint: '勾选「{name}」要装到的位置：默认 DSH 技能库，「更多执行器」可装到其它工具。选择会被记住，下次打开沿用。目标已有同名技能会标注并保留。',
+      moreExecutorsBtn: '更多执行器 ▾',
+      installToBtn: '安装（{n}）',
+      installedToToast: '已安装到 {n} 个执行器',
+      noInstallTargets: '没有可用的目标执行器',
       whereDsh: 'DSH 技能库',
       operationFailed: '操作失败',
       preview: '文件预览',
@@ -823,12 +837,7 @@ window.__ModuleLoader__.load({
       mdCodeUnwrap: 'No wrap',
       mdFootnotes: 'Footnotes',
       installFrom: 'Install from {label}',
-      installTitle: 'Install',
-      installOk: 'Install',
       cancel: 'Cancel',
-      installedToast: 'Installed into the DSH library',
-      marketLabel: 'Market',
-      installConfirm: 'Install "{name}" from {label} into the DSH skills library. It becomes callable through the DSH skill tool.',
       installFromMarket: 'Install {name} from market?',
       deleteTitle: 'Delete skill',
       deleteConfirm: 'You are about to delete "{name}" from {where}. It will be moved to the trash and can be restored.',
@@ -851,6 +860,25 @@ window.__ModuleLoader__.load({
       deletedForeverToast: 'Permanently deleted',
       emptiedTrashToast: 'Trash emptied',
       movedToTrash: 'Moved to trash',
+      migrateBtn: 'Move to pool',
+      migrateTitle: 'Move to Agents pool',
+      migrateConfirm: '"{name}" will be moved to {pool}, with a link left at the original location. Every source keeps working with it.',
+      migratedToast: 'Moved to the pool; link left in place',
+      linkedByTitle: 'Linked by: {names}',
+      linkedByCount: '{n} linked by',
+      linkedByDialogTitle: 'Linked by ({n})',
+      linkedByDialogHint: 'These executors link to this skill from their skills directories. Select links to delete them (moved to trash); the pooled skill itself stays untouched.',
+      deleteSelectedBtn: 'Delete selected ({n})',
+      deletedLinksToast: 'Deleted {n} link(s) — moved to trash',
+      selectAllBtn: 'Select all',
+      invertSelectionBtn: 'Invert',
+      installMoreBtn: 'More',
+      installToTitle: 'Install skill',
+      installToHint: 'Pick where "{name}" goes: the DSH library by default, or expand More executors to copy it into other tools. Your selection is remembered for next time. Targets already holding a same-named skill are marked and kept.',
+      moreExecutorsBtn: 'More executors ▾',
+      installToBtn: 'Install ({n})',
+      installedToToast: 'Installed to {n} executor(s)',
+      noInstallTargets: 'No target executors available',
       whereDsh: 'the DSH library',
       operationFailed: 'Operation failed',
       preview: 'File preview',
@@ -1122,6 +1150,19 @@ window.__ModuleLoader__.load({
 
     // ── Small building blocks ────────────────────────────────────────────────
 
+    // 安装目标记忆（localStorage）：安装对话框下次打开时沿用上次的勾选
+    const INSTALL_TARGETS_KEY = 'skills-management:install-targets'
+    function loadInstallTargets() {
+      try {
+        const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(INSTALL_TARGETS_KEY) : null
+        const parsed = raw ? JSON.parse(raw) : null
+        return Array.isArray(parsed) ? parsed.filter(x => typeof x === 'string') : []
+      } catch { return [] }
+    }
+    function saveInstallTargets(keys) {
+      try { if (typeof localStorage !== 'undefined') localStorage.setItem(INSTALL_TARGETS_KEY, JSON.stringify(keys)) } catch {}
+    }
+
     const Tag = ({ tone, children, ...rest }) =>
       h('span', { className: 'sk-tag' + (tone ? ' ' + tone : ''), ...rest }, children)
 
@@ -1133,10 +1174,13 @@ window.__ModuleLoader__.load({
     const Empty = ({ children }) => h('div', { className: 'sk-empty' }, children)
 
     function Avatar({ name, square, size }) {
+      // 渲染期必须 total：linkedBy 等数据在宿主/插件版本错配时可能是旧形状
+      // （字符串而非 {key,name}），name 可能落为 undefined——绝不能在这里抛
+      const initial = (String(name || '?')[0] || '?').toUpperCase()
       const sizing = size ? { width: size, height: size, fontSize: Math.round(size * 0.42) } : {}
       return h('div', { className: 'sk-avatar' + (square ? ' sq' : ''),
           style: { background: gradient(name), ...sizing } },
-        (name[0] || '?').toUpperCase())
+        initial)
     }
 
     /** Executor dropdown: self-contained popover (host primitives expose no Menu). */
@@ -1167,10 +1211,17 @@ window.__ModuleLoader__.load({
 
     // ── Skill / executor cards ───────────────────────────────────────────────
 
-    function SkillCard({ row, s, t, onOpen, onInstall, onDelete, onShare, onToggleVisible }) {
+    function SkillCard({ row, s, t, onOpen, onInstall, onDelete, onShare, onToggleVisible, linkedByLabels, onOpenLinker }) {
       const name = shortName(s.name)
       const usage = usageText(s, t)
       const installed = isInstalledRow(s)
+      // 反向链接（池技能专用）：数字在前，后随一排链接来源头像。整行可点
+      // （stopPropagation 拦住卡片整卡的详情跳转）——弹出放大的链接来源列表，
+      // 可多选批量删除链接；悬停列出名称。linkedBy 条目为 { key, name }；
+      // 容忍旧宿主/缓存 bundle 错配时的字符串条目（按 key 归一）。
+      const linkedBy = Array.isArray(s.linkedBy) && s.linkedBy.length > 0 ? s.linkedBy : null
+      const linkedByKeys = linkedBy ? linkedBy.map(e => (e && typeof e === 'object' ? e.key : e)) : null
+      const linkedByNames = linkedByKeys ? linkedByKeys.map(k => (linkedByLabels && linkedByLabels[k]) || k || '?') : null
       return h('div', { className: 'sk-card' + (s.isLink ? ' link' : ''), role: 'button', tabIndex: 0,
           onClick: () => onOpen(s),
           onKeyDown: e => e.key === 'Enter' && onOpen(s) },
@@ -1181,6 +1232,15 @@ window.__ModuleLoader__.load({
             (s.fileCount || s.totalSize) && h('div', { className: 'sk-dir' }, `${s.fileCount || 0} · ${formatSize(s.totalSize || 0)} · ${formatTime(s.modifiedAt)}`))),
         h('div', { className: 'sk-desc' }, s.description || ''),
         usage && h('div', { className: 'sk-stats', title: t('usageHint') }, usage),
+        linkedBy && h('div', { style: { display: 'flex', alignItems: 'center', margin: '2px 0 6px', cursor: onOpenLinker ? 'pointer' : undefined },
+            role: onOpenLinker ? 'button' : undefined, tabIndex: onOpenLinker ? 0 : undefined,
+            title: t('linkedByTitle', { names: linkedByNames.join(', ') }),
+            onClick: (e) => { if (!onOpenLinker) return; e.stopPropagation(); onOpenLinker(s) },
+            onKeyDown: (e) => { if (!onOpenLinker || (e.key !== 'Enter' && e.key !== ' ')) return; e.stopPropagation(); e.preventDefault(); onOpenLinker(s) } },
+          h('span', { className: 'sk-hint', style: { fontSize: 12, marginRight: 6 } }, t('linkedByCount', { n: linkedBy.length })),
+          linkedByKeys.map((k, i) => h('span', { key: k, title: linkedByNames[i],
+            style: { marginLeft: i === 0 ? 0 : -5, lineHeight: 0, position: 'relative', zIndex: i } },
+            h(Avatar, { name: linkedByNames[i], size: 18 })))),
         h('div', { className: 'sk-foot' },
           h('div', { className: 'sk-chips' },
             h(Tag, null, row.label),
@@ -1249,11 +1309,12 @@ window.__ModuleLoader__.load({
 
     // ── Detail modal ─────────────────────────────────────────────────────────
 
-    function DetailModal({ sel, executors, t, onClose, onInstalled, onDeleted }) {
+    function DetailModal({ sel, executors, t, onClose, onInstallTo, onDeleted, onMigrated }) {
       const [data, setData] = useState(null)
       const [file, setFile] = useState(null)
       const [fileText, setFileText] = useState('')
       const [confirming, setConfirming] = useState(false)
+      const [migrating, setMigrating] = useState(false)
       const [toast, setToast] = useState(false)
       const meta = data?.meta || {}
       const row = sel.executorKey ? executors.find(x => x.key === sel.executorKey) : null
@@ -1280,18 +1341,23 @@ window.__ModuleLoader__.load({
           const r = await fetch(API, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
           if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status)
           setConfirming(false)
-          onDeleted(sel.name)
+          onDeleted(sel.name, sel.executorKey || 'dsh')
         } catch (e) { setConfirming(false); alert(t('operationFailed') + ': ' + e.message) }
       }
 
-      const doInstall = async () => {
+      const doMigrate = async () => {
         try {
           const body = { name: sel.name }
-          if (sel.executorKey && sel.executorKey !== 'dsh') body.from = sel.executorKey
-          const r = await fetch(API + '/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+          if (sel.executorKey) body.executor = sel.executorKey
+          const r = await fetch(API + '/migrate-to-pool', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
           if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status)
-          onInstalled(sel.name)
-        } catch (e) { alert(t('operationFailed') + ': ' + e.message) }
+          setMigrating(false)
+          const migrated = (await r.json().catch(() => ({}))).migrated
+          // 迁移后该技能在原来源变成链接行：重拉详情显示链接字段
+          const q = `?name=${encodeURIComponent(sel.name)}${sel.executorKey ? '&executor=' + encodeURIComponent(sel.executorKey) : ''}`
+          getJson(API + '/detail' + q).then(d => { setData(d) }).catch(() => {})
+          onMigrated && onMigrated(sel.name, migrated)
+        } catch (e) { setMigrating(false); alert(t('operationFailed') + ': ' + e.message) }
       }
 
       const copyContent = () => {
@@ -1325,7 +1391,7 @@ window.__ModuleLoader__.load({
               h('div', { className: 'sk-page' },
                 h('div', { className: 'sk-hint' }, meta.description || meta.whenToUse || ''),
                 h('div', { className: 'sk-toolbar' },
-                  row && row.key !== 'dsh' && !installed && h(P.Button, { variant: 'primary', size: 'sm', onClick: doInstall }, `${t('installFrom', { label: row.label })}`),
+                  row && row.key !== 'dsh' && !installed && h(P.Button, { variant: 'primary', size: 'sm', onClick: () => onInstallTo && onInstallTo(sel.name, sel.executorKey) }, `${t('installFrom', { label: row.label })}`),
                   row && row.key !== 'dsh' && installed && h(Tag, { tone: 'ok' }, t('installedTag')),
                   row && row.key === 'dsh' && h(Tag, { tone: 'ok' }, t('activeInDsh')),
                   row && (row.key === 'dsh' || row.key === 'agents') && h('span', { className: 'sk-inv-toggle', title: t('invocationHint') },
@@ -1336,6 +1402,10 @@ window.__ModuleLoader__.load({
                   row && row.readOnly && h(Tag, { tone: 'danger' }, t('readOnlyTag')),
                   h(P.Button, { variant: 'outline', size: 'sm', onClick: copyContent }, t('copy')),
                   h('span', { className: 'spacer' }),
+                  // 迁至共享池：可写来源（或无范围时=dsh 已安装库）的实体技能可用；
+                  // 已是链接/已在池里的不再提供
+                  (sel.executorKey ? (row && !row.readOnly) : data?.isInstalled) && data && !data.isLink && !data.inPool &&
+                    h(P.Button, { variant: 'outline', size: 'sm', onClick: () => setMigrating(true) }, t('migrateBtn')),
                   row && !row.readOnly && h(P.Button, { variant: 'outline', size: 'sm', onClick: () => setConfirming(true) }, t('deleteBtn'))),
                 h('div', { className: 'sk-meta' },
                   h('div', null, h('div', { className: 'sk-dir' }, t('pathLabel')), h('div', { className: 'sk-hint' }, data?.dir || '-')),
@@ -1366,6 +1436,14 @@ window.__ModuleLoader__.load({
             h(ButtonLite, { danger: true, primary: true, onClick: doDelete }, t('deleteBtn')),
           ],
         }, h('div', { className: 'sk-hint' }, t('deleteConfirm', { name: sel.name, where: row ? row.label : t('whereDsh') }))),
+        migrating && h(SkDialog, {
+          title: t('migrateTitle'),
+          onClose: () => setMigrating(false),
+          footer: [
+            h(ButtonLite, { onClick: () => setMigrating(false) }, t('cancel')),
+            h(ButtonLite, { primary: true, onClick: doMigrate }, t('migrateBtn')),
+          ],
+        }, h('div', { className: 'sk-hint' }, t('migrateConfirm', { name: sel.name, pool: data?.poolDir || '~/.agents/skills' }))),
         toast && h(InToast, { text: t('copied') }))
     }
 
@@ -1645,17 +1723,17 @@ window.__ModuleLoader__.load({
         const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
         if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status)
       }
-      const act = async (fn, toast) => {
+      const act = async (fn, toast, changedKey) => {
         setBusy(true)
         try {
           await fn()
           setConfirm(null)
           onToast(toast)
           refresh()
-          onChanged && onChanged() // 恢复后来源列表重新出现该技能
+          onChanged && onChanged(changedKey) // 恢复后来源列表重新出现该技能
         } catch (e) { onToast(t('operationFailed') + ': ' + e.message) } finally { setBusy(false) }
       }
-      const doRestore = (entry) => act(() => mutate(API + '/trash/restore', 'POST', { id: entry.id }), t('restoredToast'))
+      const doRestore = (entry) => act(() => mutate(API + '/trash/restore', 'POST', { id: entry.id }), t('restoredToast'), entry.executorKey)
       const doForever = (entry) => act(() => mutate(API + '/trash', 'DELETE', { id: entry.id }), t('deletedForeverToast'))
       const doEmpty = () => act(() => mutate(API + '/trash', 'DELETE', { all: true }), t('emptiedTrashToast'))
 
@@ -1706,6 +1784,141 @@ window.__ModuleLoader__.load({
             ? t('restoreConfirm', { name: confirm.entry.name, dir: confirm.entry.originalDir || '-' })
             : t('deleteForeverConfirm', { name: confirm.entry.name }))),
       ]
+    }
+
+    /** 链接来源列表（池技能卡片反向链接行的弹窗）：放大的执行器头像 + 名称，
+     *  勾选后批量删除——走普通 DELETE 通道，链接移入回收站，池中技能本体不动。
+     *  rows 是本地副本：删除成功的行就地移除，全部删完自动关闭。 */
+    function LinkedByDialog({ t, skill, executorLabels, onClose, onToast, onChanged, onRefreshCandidates }) {
+      // 版本错配兜底：旧宿主给字符串条目时，链接名只能按技能本名猜
+      const [rows, setRows] = useState(() => (Array.isArray(skill.linkedBy) ? skill.linkedBy : [])
+        .map((e) => (e && typeof e === 'object' ? e : { key: e, name: skill.name })))
+      // 打开即拉新 summary：执行器目录可能已在页面加载后变化（如迁移新建的池）
+      useEffect(() => { onRefreshCandidates && onRefreshCandidates() }, [])
+      const [selected, setSelected] = useState({})
+      const [busy, setBusy] = useState(false)
+      const toggle = (key) => setSelected(s => ({ ...s, [key]: !s[key] }))
+      const selectAll = () => setSelected(Object.fromEntries(rows.map((e) => [e.key, true])))
+      const invert = () => setSelected((s) => Object.fromEntries(rows.map((e) => [e.key, !s[e.key]])))
+      const count = rows.filter(e => selected[e.key]).length
+
+      const doDelete = async () => {
+        const targets = rows.filter(e => selected[e.key])
+        if (targets.length === 0) return
+        setBusy(true)
+        const failed = []
+        const done = []
+        for (const e of targets) {
+          try {
+            const r = await fetch(API, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: e.name, executor: e.key }) })
+            if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status)
+            done.push(e.key)
+          } catch (err) { failed.push(`${(executorLabels && executorLabels[e.key]) || e.key}: ${err.message}`) }
+        }
+        setBusy(false)
+        if (failed.length > 0) onToast(t('operationFailed') + ': ' + failed.join('; '))
+        if (done.length > 0) onToast(t('deletedLinksToast', { n: done.length }))
+        const rest = rows.filter(e => !done.includes(e.key))
+        setSelected({})
+        if (done.length > 0) onChanged && onChanged(done) // 池行 linkedBy 已变：让上层定点失效
+        if (rest.length === 0) { onClose(); return }
+        setRows(rest)
+      }
+
+      return h(SkDialog, { title: t('linkedByDialogTitle', { n: rows.length }), onClose },
+        h('div', { className: 'sk-hint', style: { marginBottom: 8 } }, t('linkedByDialogHint')),
+        h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+          rows.map((e) => {
+            const label = (executorLabels && executorLabels[e.key]) || e.key
+            return h('label', { key: e.key, style: { display: 'flex', alignItems: 'center', gap: 10,
+                padding: '8px 10px', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 10, cursor: 'pointer' } },
+              h('input', { type: 'checkbox', checked: !!selected[e.key], onChange: () => toggle(e.key), disabled: busy }),
+              h('span', { style: { lineHeight: 0 } }, h(Avatar, { name: label, size: 28 })),
+              h('span', { className: 'sk-title' }, label),
+              e.name !== skill.name && h('span', { className: 'sk-hint', style: { fontSize: 12 } }, `← ${e.name}`))
+          })),
+        h('div', { className: 'sk-dlg-foot', style: { marginTop: 8 } },
+          h(ButtonLite, { small: true, disabled: busy || rows.length === 0, onClick: selectAll }, t('selectAllBtn')),
+          h(ButtonLite, { small: true, disabled: busy || rows.length === 0, onClick: invert }, t('invertSelectionBtn')),
+          h('span', { style: { flex: 1 } }),
+          h(ButtonLite, { onClick: onClose }, t('cancel')),
+          h(ButtonLite, { primary: true, danger: count > 0, disabled: count === 0 || busy, onClick: doDelete },
+            t('deleteSelectedBtn', { n: count }))))
+    }
+
+    /** 安装对话框（卡片/详情「安装」入口）：默认勾选 DSH 技能库，「更多执行器」
+     *  展开后可勾选其它来源（目录存在、可写、非来源自身）。选择记忆在
+     *  localStorage，下次打开沿用；上次勾了别的执行器则自动展开。全部成功才
+     *  落记忆并关闭；部分失败时失败行标注原因、对话框保留。 */
+    function InstallToDialog({ t, name, from, executors, onClose, onToast, onChanged, onRefreshCandidates }) {
+      useEffect(() => { onRefreshCandidates && onRefreshCandidates() }, [])
+      const dshRow = executors.find(r => r.key === 'dsh')
+      const others = executors.filter(r => r.key !== 'dsh' && r.key !== from && r.dirExists && !r.readOnly)
+      const candidates = dshRow ? [dshRow, ...others] : others
+      const [selected, setSelected] = useState(() => {
+        const saved = loadInstallTargets().filter(k => candidates.some(c => c.key === k))
+        const initial = saved.length > 0 ? saved : (dshRow ? ['dsh'] : [])
+        return Object.fromEntries(initial.map(k => [k, true]))
+      })
+      // 上次选择含非 dsh 目标 → 自动展开更多执行器
+      const [expanded, setExpanded] = useState(() => Object.keys(selected).some(k => k !== 'dsh'))
+      const [errors, setErrors] = useState({})
+      const [busy, setBusy] = useState(false)
+      const toggle = (key) => setSelected(s => ({ ...s, [key]: !s[key] }))
+      const othersShown = expanded ? candidates.filter(c => c.key !== 'dsh') : []
+      const selectAll = () => setSelected(Object.fromEntries(candidates.map((e) => [e.key, true])))
+      const invert = () => setSelected((s) => Object.fromEntries(candidates.map((e) => [e.key, !s[e.key]])))
+      const count = candidates.filter(e => selected[e.key]).length
+
+      const doInstall = async () => {
+        const targets = candidates.filter(e => selected[e.key]).map(e => e.key)
+        if (targets.length === 0 || busy) return
+        setBusy(true)
+        try {
+          const body = { name, targets }
+          if (from) body.from = from
+          const r = await fetch(API + '/install-to', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+          const d = await r.json().catch(() => ({}))
+          if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status)
+          const okKeys = [], errs = {}
+          for (const res of d.results || []) {
+            if (res.ok) okKeys.push(res.key)
+            else errs[res.key] = res.error || 'failed'
+          }
+          setErrors(errs)
+          if (okKeys.length > 0) {
+            onToast(t('installedToToast', { n: okKeys.length }))
+            onChanged && onChanged(okKeys)
+          }
+          if (Object.keys(errs).length === 0) {
+            saveInstallTargets(targets) // 记住上次选择（全部成功才落，不带回失败项）
+            onClose()
+          }
+        } catch (e) { onToast(t('operationFailed') + ': ' + e.message) } finally { setBusy(false) }
+      }
+
+      const rowEl = (e) =>
+        h('label', { key: e.key, style: { display: 'flex', alignItems: 'center', gap: 10,
+            padding: '8px 10px', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 10, cursor: 'pointer' } },
+          h('input', { type: 'checkbox', checked: !!selected[e.key], onChange: () => toggle(e.key), disabled: busy }),
+          h('span', { style: { lineHeight: 0 } }, h(Avatar, { name: e.label, size: 28 })),
+          h('span', { className: 'sk-title' }, e.label),
+          h('span', { className: 'sk-hint', style: { fontSize: 12 } }, e.dir),
+          errors[e.key] && h('span', { className: 'sk-tag danger' }, errors[e.key]))
+
+      return h(SkDialog, { title: t('installToTitle'), onClose },
+        h('div', { className: 'sk-hint', style: { marginBottom: 8 } }, t('installToHint', { name })),
+        h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+          dshRow && rowEl(dshRow),
+          othersShown.map(rowEl),
+          !expanded && others.length > 0 && h(ButtonLite, { small: true, onClick: () => setExpanded(true) }, t('moreExecutorsBtn'))),
+        candidates.length === 0 && h(Empty, null, t('noInstallTargets')),
+        h('div', { className: 'sk-dlg-foot', style: { marginTop: 8 } },
+          expanded && h(ButtonLite, { small: true, disabled: busy, onClick: selectAll }, t('selectAllBtn')),
+          expanded && h(ButtonLite, { small: true, disabled: busy, onClick: invert }, t('invertSelectionBtn')),
+          h('span', { style: { flex: 1 } }),
+          h(ButtonLite, { onClick: onClose }, t('cancel')),
+          h(ButtonLite, { primary: true, disabled: count === 0 || busy, onClick: doInstall }, t('installToBtn', { n: count }))))
     }
 
     /** 增量网格：先渲染前 pageSize 张，按需增长——市场集合有 6k+ 条，不能一次全挂。
@@ -1783,7 +1996,7 @@ window.__ModuleLoader__.load({
               h(SkillCard, { key: row.key + '/' + s.name, row, s, t, onOpen, onInstall, onDelete, onShare, onToggleVisible })))]
     }
 
-    function DrillInView({ row, searchText, sortBy, t, onSearch, onSort, onBack, onOpen, onInstall, onDelete, onShare, onToggleVisible }) {
+    function DrillInView({ row, searchText, sortBy, t, onSearch, onSort, onBack, onOpen, onInstall, onDelete, onShare, onToggleVisible, executorLabels, onOpenLinker }) {
       if (!row) return null
       if (!row.dirExists) {
         return [
@@ -1810,7 +2023,7 @@ window.__ModuleLoader__.load({
         !skills.length
           ? h(Empty, null, searchText ? t('emptySearch') : t('emptySkillsIn', { label: row.label }))
           : h(PagedGrid, { key: 'ed' + row.key + sortBy, items: skills, t,
-              render: s => h(SkillCard, { key: s.name, row, s, t, onOpen, onInstall, onDelete, onShare, onToggleVisible }) }),
+              render: s => h(SkillCard, { key: s.name, row, s, t, onOpen, onInstall, onDelete, onShare, onToggleVisible, linkedByLabels: executorLabels, onOpenLinker }) }),
       ]
     }
 
@@ -1869,8 +2082,28 @@ window.__ModuleLoader__.load({
       // a tab that needs it is opened, and re-fetch it after mutations.
       const [baseStale, setBaseStale] = useState(true)
       const [baseLoading, setBaseLoading] = useState(false)
+      // summary 合并刷新：新行/消失行随 fresh 集合走；计数没变且非共享池的行保留
+      // 已加载的 skills（避免每次刷新都清空钻取缓存引发整轮重拉——全量视图 20+
+      // 个来源）。计数变了或共享池行（linkedBy 反向链接不进计数）丢掉 skills，
+      // 由钻取/全量 effect 按需重拉。
       const reloadExecutors = () => {
-        getJson(API + '/executors?mode=summary').then(d => setExecutors(d.executors || [])).catch(() => {})
+        getJson(API + '/executors?mode=summary').then(d => setExecutors(prev => {
+          const prevByKey = new Map(prev.map(r => [r.key, r]))
+          return (d.executors || []).map(r => {
+            const old = prevByKey.get(r.key)
+            if (old && Array.isArray(old.skills) && old.skillCount === r.skillCount && !r.isPool && !old.isPool) {
+              return { ...r, skills: old.skills }
+            }
+            return r
+          })
+        })).catch(() => {})
+      }
+      // 定点失效：让指定来源行的 skills 缓存作废（可见行由 effect 自动重拉，
+      // 不可见行等进入时再拉）。用于安装/删除/迁移/恢复/批量删链接之后。
+      const staleRows = (keys) => {
+        const set = new Set((keys || []).filter(Boolean))
+        if (set.size === 0) return
+        setExecutors(rows => rows.map(r => set.has(r.key) && Array.isArray(r.skills) ? { ...r, skills: undefined } : r))
       }
       const reloadBase = () => {
         setBaseStale(false)
@@ -1916,6 +2149,9 @@ window.__ModuleLoader__.load({
       }, [tab, executorView, executors])
 
       const row = filterExecutor !== 'all' ? executors.find(x => x.key === filterExecutor) : null
+      // key → 显示名映射：卡片反向链接头像用 label 派生渐变与首字母
+      const executorLabels = {}
+      for (const r of executors) executorLabels[r.key] = r.label
 
       const openDetail = (s, executorKey) => setSel({ name: s.name, executorKey })
       const openShare = (row, s) => {
@@ -1932,24 +2168,9 @@ window.__ModuleLoader__.load({
         })
       }
       const [pendingDelete, setPendingDelete] = useState(null)
-      const [pendingInstall, setPendingInstall] = useState(null)
+      const [linkerList, setLinkerList] = useState(null) // { name, linkedBy } — 链接来源弹窗
+      const [pendingInstallTo, setPendingInstallTo] = useState(null) // { name, from } — 安装到其他执行器
       const [toastText, setToastText] = useState(null)
-      const doPendingInstall = async () => {
-        if (!pendingInstall) return
-        const { row, name } = pendingInstall
-        setPendingInstall(null)
-        try {
-          const body = { name }
-          if (row && row.key && row.key !== '@market') body.from = row.key
-          const r = await fetch(API + '/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-          if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status)
-          setToastText(t('installedToast'))
-          setTimeout(() => setToastText(null), 2600)
-          reloadExecutors()
-          markMarketInstalled(name, true)
-          setBaseStale(true)
-        } catch (e) { alert(t('operationFailed') + ': ' + e.message) }
-      }
       const doPendingDelete = async () => {
         if (!pendingDelete) return
         const ok = await quickDelete(t, pendingDelete.executor, pendingDelete.name)
@@ -1958,6 +2179,7 @@ window.__ModuleLoader__.load({
         setToastText(t('movedToTrash'))
         setTimeout(() => setToastText(null), 2600)
         reloadExecutors()
+        staleRows([pendingDelete.executor || 'dsh'])
         markMarketInstalled(pendingDelete.name, false)
         setBaseStale(true)
       }
@@ -1966,11 +2188,13 @@ window.__ModuleLoader__.load({
       try {
       if (tab === 'executors') {
         if (filterExecutor !== 'all') {
-          body = h(DrillInView, { row, searchText: searchDrill, sortBy, t,
+          body = h(DrillInView, { row, searchText: searchDrill, sortBy, t, executorLabels,
+            // 池卡片上的反向链接行：弹出链接来源列表（多选批量删链接）
+            onOpenLinker: (s) => setLinkerList({ name: s.name, linkedBy: s.linkedBy }),
             onSearch: setSearchDrill, onSort: setSortBy, onShare: openShare,
             onBack: () => { setFilterExecutor('all'); setSearchDrill('') },
             onOpen: s => openDetail(s, row?.key),
-            onInstall: (r, name) => setPendingInstall({ row: r, name }),
+            onInstall: (r, name) => setPendingInstallTo({ name, from: r && r.key && r.key !== '@market' ? r.key : null }),
             onDelete: (r, name) => setPendingDelete({ executor: r.key, name }),
             onToggleVisible: (r, name, modelInvocable) => {
               fetch(API + '/invocation', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, modelInvocable }) })
@@ -1984,7 +2208,7 @@ window.__ModuleLoader__.load({
             onFilter: v => { setSourceFilter(v); if (v !== 'all') { setFilterExecutor(v); setSearchAll(''); setSearchExec('') } },
             onBack: () => setExecutorView('cards'),
             onOpen: s => { const owner = executors.find(x => x.dirExists && Array.isArray(x.skills) && x.skills.some(k => k.name === s.name)); openDetail(s, owner ? owner.key : sourceFilter !== 'all' ? sourceFilter : 'dsh') },
-            onInstall: (r, name) => setPendingInstall({ row: r, name }),
+            onInstall: (r, name) => setPendingInstallTo({ name, from: r && r.key && r.key !== '@market' ? r.key : null }),
             onDelete: (r, name) => setPendingDelete({ executor: r.key, name }),
             onToggleVisible: (r, name, modelInvocable) => {
               fetch(API + '/invocation', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, modelInvocable }) })
@@ -2001,7 +2225,7 @@ window.__ModuleLoader__.load({
       } else if (tab === 'trash') {
         body = h(TrashView, { t,
           onToast: (text) => { setMarketToast(text); setTimeout(() => setMarketToast(null), 3000) },
-          onChanged: () => { reloadExecutors(); setBaseStale(true) } })
+          onChanged: (executorKey) => { reloadExecutors(); staleRows([executorKey]); setBaseStale(true) } })
       } else {
         // Market tab mirrors the executors tab: source cards by default, a flat
         // all-skills view on demand, and per-source drill-in with a scoped filter.
@@ -2026,7 +2250,7 @@ window.__ModuleLoader__.load({
               ? h(PagedGrid, { key: 'md' + marketDrill + sortBy, items: sk, t,
                   render: s => h(SkillCard, { key: s.name, row: mkRow(s.source), s: mkCard(s), t,
                     onOpen: item => openDetail({ name: item.installName || item.name }, null),
-                    onInstall: (_r, name) => setPendingInstall({ row: null, name }),
+                    onInstall: (_r, name) => setPendingInstallTo({ name, from: null }),
                     onDelete: () => {} }) })
               : h(Empty, null, t('emptySearch')),
           ]
@@ -2044,7 +2268,7 @@ window.__ModuleLoader__.load({
               ? h(PagedGrid, { key: 'ma' + sortBy, items: sk, t,
                   render: s => h(SkillCard, { key: s.name, row: mkRow(s.source), s: mkCard(s), t,
                     onOpen: item => openDetail({ name: item.installName || item.name }, null),
-                    onInstall: (_r, name) => setPendingInstall({ row: null, name }),
+                    onInstall: (_r, name) => setPendingInstallTo({ name, from: null }),
                     onDelete: () => {} }) })
               : h(Empty, null, t('emptySearch')),
           ]
@@ -2086,8 +2310,15 @@ window.__ModuleLoader__.load({
         h('div', { className: 'sk-body' }, body),
         sel && h(DetailModal, { sel, executors, t,
           onClose: () => setSel(null),
-          onInstalled: (name) => { setSel(null); reloadExecutors(); markMarketInstalled(name, true); setBaseStale(true) },
-          onDeleted: (name) => { setSel(null); setToastText(t('movedToTrash')); setTimeout(() => setToastText(null), 2600); reloadExecutors(); markMarketInstalled(name, false); setBaseStale(true) } }),
+          onInstallTo: (name, executorKey) => setPendingInstallTo({ name, from: executorKey || null }),
+          onDeleted: (name, executorKey) => { setSel(null); setToastText(t('movedToTrash')); setTimeout(() => setToastText(null), 2600); reloadExecutors(); staleRows([executorKey || 'dsh']); markMarketInstalled(name, false); setBaseStale(true) },
+          onMigrated: (name, migrated) => {
+            setToastText(t('migratedToast')); setTimeout(() => setToastText(null), 2600)
+            reloadExecutors()
+            // 失效来源行（技能变链接）+ 池行（新增实体，带反向链接）；池行 key 按目录路径匹配
+            const poolKey = migrated && executors.find(r => r.dir === migrated.poolDir)?.key
+            staleRows([migrated && migrated.executor, poolKey])
+          } }),
         shareParams && h(ShareSkillDialog, {
           t, params: shareParams, onClose: () => setShareParams(null),
           onToast: (text) => { setMarketToast(text); setTimeout(() => setMarketToast(null), 3000) },
@@ -2105,15 +2336,28 @@ window.__ModuleLoader__.load({
           onChanged: () => reloadExecutors(),
         }),
         marketToast && h(InToast, { text: marketToast }),
-        pendingInstall && h(SkDialog, {
-          title: t('installTitle'),
-          onClose: () => setPendingInstall(null),
-          footer: [
-            h(ButtonLite, { onClick: () => setPendingInstall(null) }, t('cancel')),
-            h(ButtonLite, { primary: true, onClick: doPendingInstall }, t('installOk')),
-          ],
-        }, h('div', { className: 'sk-hint' },
-            t('installConfirm', { name: pendingInstall.name, label: pendingInstall.row ? pendingInstall.row.label : t('marketLabel') }))),
+        linkerList && h(LinkedByDialog, { t, skill: linkerList, executorLabels,
+          onRefreshCandidates: reloadExecutors,
+          onClose: () => setLinkerList(null),
+          onToast: (text) => { setMarketToast(text); setTimeout(() => setMarketToast(null), 3000) },
+          onChanged: (doneKeys) => {
+            // 链接删除后池行 linkedBy 与链接来源行都变：定点失效（计数多半不变）
+            staleRows([...(doneKeys || []), filterExecutor !== 'all' ? filterExecutor : null])
+          } }),
+        pendingInstallTo && h(InstallToDialog, { t, name: pendingInstallTo.name, from: pendingInstallTo.from, executors,
+          onRefreshCandidates: reloadExecutors,
+          onClose: () => setPendingInstallTo(null),
+          onToast: (text) => { setMarketToast(text); setTimeout(() => setMarketToast(null), 3000) },
+          onChanged: (okKeys) => {
+            reloadExecutors()
+            staleRows(okKeys) // 目标执行器的技能列表作废重拉（头像排/新卡片即时出现）
+            // 装进 dsh 库才算「已安装」徽标；详情弹窗若开着，换个引用逼它重拉
+            if (Array.isArray(okKeys) && okKeys.includes('dsh')) {
+              markMarketInstalled(pendingInstallTo.name, true)
+              setBaseStale(true)
+              setSel(s => (s ? { ...s } : s))
+            }
+          } }),
         toastText && h(InToast, { text: toastText }),
         pendingDelete && h(SkDialog, {
           title: t('deleteTitle'),

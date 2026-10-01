@@ -128,7 +128,8 @@ test('market rows already in the library are badged, not offered for install', (
   assert.ok(/const installed = isInstalledRow\(s\)/.test(src), 'SkillCard derives installed')
   assert.ok(/installed && h\(Tag, \{ tone: 'ok' \}, t\('installedTag'\)\)/.test(src), 'badge rendered')
   assert.ok(/row\.key !== 'dsh' && \(installed/.test(src), 'install button gated on installed')
-  assert.ok(/markMarketInstalled\(name, true\)/.test(src), 'install refreshes the badge')
+  assert.ok(/okKeys\.includes\('dsh'\)\)\s*\{\s*markMarketInstalled\(pendingInstallTo\.name, true\)/.test(src),
+    'install into the dsh library refreshes the badge (picker flow)')
 })
 
 test('search input is debounced and does not reset the grid on every keystroke', () => {
@@ -329,4 +330,68 @@ test('sortSkills orders by the picked metric with missing values sinking', () =>
   assert.deepEqual(sortSkills(wrapped, 'tokens', it => it.s).map(it => it.s.name), ['b', 'a', 'c', 'no-usage'])
   // 不改变原数组
   assert.deepEqual(rows.map(r => r.name), ['no-usage', 'a', 'b', 'c'])
+})
+
+test('linkedBy row opens a linker-list dialog with batch link deletion', () => {
+  // Regression: the backlink row lives inside the clickable SkillCard — without
+  // stopPropagation, clicking it opened the skill detail instead of the linker
+  // list. The dialog lists linking executors enlarged and batch-deletes the
+  // links (each goes through the normal DELETE channel → trash).
+  const src = readFileSync(new URL('../client/index.js', import.meta.url), 'utf8')
+  assert.ok(/onClick: \(e\) => \{ if \(!onOpenLinker\) return; e\.stopPropagation\(\); onOpenLinker\(s\) \}/.test(src),
+    'backlink row stops propagation and opens the linker list')
+  assert.ok(/onOpenLinker: \(s\) => setLinkerList\(\{ name: s\.name, linkedBy: s\.linkedBy \}\)/.test(src),
+    'SkillsPage opens the linker list dialog')
+  assert.ok(/function LinkedByDialog\(\{ t, skill, executorLabels, onClose, onToast, onChanged/.test(src),
+    'LinkedByDialog component exists')
+  assert.ok(/body: JSON\.stringify\(\{ name: e\.name, executor: e\.key \}\)/.test(src),
+    'batch delete addresses each link by its relPath in that executor')
+  // 版本错配（旧 bundle 字符串 linkedBy × 新宿主对象 linkedBy）曾让 Avatar 拿到
+  // undefined name 在 name[0] 抛错、整个 settings.section 白屏：Avatar 必须 total
+  assert.ok(/String\(name \|\| '\?'\)\[0\]/.test(src), 'Avatar normalizes name before indexing')
+  assert.ok(/typeof e === 'object' \? e\.key : e/.test(src), 'SkillCard normalizes legacy string linkedBy entries')
+  // 全选/反选：批量删除对话框的批量选择辅助
+  assert.ok(/const selectAll = \(\) => setSelected\(Object\.fromEntries\(rows\.map\(\(e\) => \[e\.key, true\]\)\)\)/.test(src),
+    'select-all sets every row')
+  assert.ok(/const invert = \(\) => setSelected\(\(s\) => Object\.fromEntries\(rows\.map\(\(e\) => \[e\.key, !s\[e\.key\]\]\)\)\)/.test(src),
+    'invert flips every row')
+})
+
+test('install opens a picker: DSH preselected, more executors expandable, selection remembered', () => {
+  const src = readFileSync(new URL('../client/index.js', import.meta.url), 'utf8')
+  // 「安装」按钮直接开选择对话框（不再是 DSH 单步确认弹窗）
+  assert.ok(/onInstall: \(r, name\) => setPendingInstallTo\(\{ name, from:/.test(src), 'install button opens the picker')
+  assert.ok(!src.includes('pendingInstall &&'), 'old DSH-only confirm dialog removed')
+  assert.ok(!src.includes('onInstallMore'), 'no separate more button — one entry')
+  // 对话框：dsh 永远第一候选（默认勾选），其余执行器「更多执行器」展开
+  assert.ok(/const dshRow = executors\.find\(r => r\.key === 'dsh'\)/.test(src), 'dsh pinned as first candidate')
+  assert.ok(/r\.key !== 'dsh' && r\.key !== from && r\.dirExists && !r\.readOnly/.test(src),
+    'other targets exclude missing/read-only/source executors')
+  assert.ok(/moreExecutorsBtn/.test(src), 'expand affordance exists')
+  // 记忆：上次选择存 localStorage，下次打开沿用（全部成功才落）
+  assert.ok(/localStorage/.test(src) && src.includes('skills-management:install-targets'), 'selection persisted')
+  assert.ok(/loadInstallTargets\(\)\.filter\(k => candidates\.some/.test(src), 'saved keys validated against current candidates')
+  assert.ok(/fetch\(API \+ '\/install-to'/.test(src), 'dialog posts to /install-to')
+})
+
+test('executor data refresh: summary merges, mutations stale affected rows, dialogs refetch on open', () => {
+  // 回归：安装/迁移/删除后相关执行器行不刷新，新卡片与反向链接头像排出不来。
+  const src = readFileSync(new URL('../client/index.js', import.meta.url), 'utf8')
+  // summary 合并：计数没变且非池行保留已加载 skills（避免整轮重拉）
+  assert.ok(/old\.skillCount === r\.skillCount && !r\.isPool && !old\.isPool/.test(src),
+    'summary merge keeps loaded skills for unchanged non-pool rows')
+  assert.ok(/const staleRows = \(keys\) =>/.test(src), 'staleRows helper exists')
+  assert.ok(/staleRows\(\[pendingDelete\.executor \|\| 'dsh'\]\)/.test(src), 'card delete stales its row')
+  assert.ok(/onDeleted: \(name, executorKey\)/.test(src) && /staleRows\(\[executorKey \|\| 'dsh'\]\)/.test(src),
+    'detail delete stales its row')
+  assert.ok(/staleRows\(okKeys\)/.test(src), 'install-to stales target rows')
+  assert.ok(/staleRows\(migrated && migrated\.executor, poolKey\)|staleRows\(\[migrated && migrated\.executor, poolKey\]\)/.test(src),
+    'migrate stales source + pool rows')
+  assert.ok(/staleRows\(\[\.\.\.\(doneKeys \|\| \[\]\), filterExecutor/.test(src), 'link batch delete stales linkers + pool row')
+  assert.ok(/staleRows\(\[executorKey\]\)/.test(src), 'trash restore stales its row')
+  // 对话框打开即拉新候选：新出现的执行器（如迁移新建的池）头像行不会因旧 summary 缺席
+  assert.ok(/useEffect\(\(\) => \{ onRefreshCandidates && onRefreshCandidates\(\) \}, \[\]\)/.test(src),
+    'dialogs refresh candidates on mount')
+  assert.ok((src.match(/onRefreshCandidates: reloadExecutors/g) || []).length >= 2,
+    'install picker and linker dialog both refetch on open')
 })
