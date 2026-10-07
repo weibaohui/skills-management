@@ -10,7 +10,7 @@ import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
 const plugin = require('../client/index.js')
-const { NS, ZH, EN, matchSkill, formatSize, insertComposerText, fetchSkillCandidates } = plugin.__internals
+const { NS, ZH, EN, matchSkill, formatSize, insertComposerText, insertViaInputActions, fetchSkillCandidates } = plugin.__internals
 
 test('client module declares slots + locale injects', () => {
   assert.equal(plugin.name, '@weibaohui/skills-management') // must equal the boot manifest id
@@ -206,6 +206,31 @@ test('insertComposerText bails slash/input-insert-text with an end-of-draft span
   assert.equal(insertComposerText(null, 's', {}, '/x '), false)
   assert.equal(insertComposerText({ sessions: { scope: () => { throw new Error('x') } } }, 's', {}, '/x '), false)
   assert.equal(insertComposerText({ sessions: { scope: () => null } }, 's', {}, '/x '), false)
+})
+
+test('insertViaInputActions captures the span at pick time (dsh 0.2.x contract)', () => {
+  // captureInsertion 在调用当下现取 span;insertText 收到的就是它,不再经过 prop 快照
+  const captured = { start: 4, end: 4, draftRev: 12 }
+  const calls = []
+  const actions = {
+    captureInsertion: () => captured,
+    insertText: (text, span) => { calls.push([text, span]); return true },
+  }
+  assert.equal(insertViaInputActions(actions, '/lint '), true)
+  assert.deepEqual(calls[0], ['/lint ', { start: 4, end: 4, draftRev: 12 }])
+  // insertText 报告 CAS 失败(草稿已变/编辑器锁定)→ false
+  assert.equal(insertViaInputActions({ captureInsertion: () => captured, insertText: () => false }, '/x '), false)
+  // captureInsertion 返回的 span 缺 draftRev → 视为无效,不调用 insertText
+  let called = 0
+  assert.equal(insertViaInputActions({ captureInsertion: () => null, insertText: () => { called++; return true } }, '/x '), false)
+  assert.equal(insertViaInputActions({ captureInsertion: () => ({ start: 0, end: 0 }), insertText: () => { called++; return true } }, '/x '), false)
+  assert.equal(called, 0)
+  // captureInsertion 抛错 → false,不外泄异常
+  assert.equal(insertViaInputActions({ captureInsertion: () => { throw new Error('busy') }, insertText: () => true }, '/x '), false)
+  // 服务缺席 / 形状不对 → false
+  assert.equal(insertViaInputActions(null, '/x '), false)
+  assert.equal(insertViaInputActions({}, '/x '), false)
+  assert.equal(insertViaInputActions({ captureInsertion: () => captured }, '/x '), false)
 })
 
 test('fetchSkillCandidates maps the host registry and guards absent services', async () => {

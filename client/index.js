@@ -69,8 +69,10 @@ const sessionsSvc = () => sessionsApi
 // the skills catalog face for the picker: the button opens
 // the plugin's own searchable picker popover (the host slash menu filters
 // only by a typed query, which a button click cannot provide); the pick is
-// written into the draft through the same scoped `slash/input-insert-text`
-// event the host menu executes. Absence hides the button; nothing else
+// written into the draft via the session slot's standard `inputActions` face
+// (`captureInsertion()` + `insertText()`, dsh 0.2.x+), falling back to the
+// scoped `slash/input-insert-text` event on hosts that still hand the slot
+// an `input` snapshot (≤0.1.x). Absence hides the button; nothing else
 // depends on it.
 // dsh 0.1.5+ moved the data plane off `connection.api` onto `ctx.remote.*`
 // (subpath inject `remote.skills`); older cores still expose
@@ -116,6 +118,11 @@ function openTriggerSource(scope, sessionId, input, sourceName) {
  * picker popover is open the composer draft cannot move (focus is in the
  * picker), so the splice applies; a stale snapshot quietly no-ops, same as
  * the host menu's span-CAS.
+ *
+ * dsh 0.2.x fallback only: the slot's standard props dropped `input`, so on
+ * new hosts `input` is undefined and this would splice with `draftRev: 0` —
+ * rejected by the editor's span-CAS whenever the draft rev is past 0. The
+ * primary path is `insertViaInputActions` (see below).
  */
 function insertComposerText(scope, sessionId, input, text) {
   const sessions = scope && scope.sessions
@@ -148,6 +155,27 @@ function insertComposerText(scope, sessionId, input, text) {
     } catch { return false }
   }
   return false
+}
+
+/**
+ * dsh 0.2.x insertion channel: the `conversation.input.left` slot no longer
+ * receives an `input` prop, so any span built from a prop snapshot carries
+ * `draftRev: 0` and the editor's span-CAS (`span.draftRev !== this.rev`)
+ * rejects it silently — pick closes the popover and nothing lands in the
+ * draft. The slot instead receives the standard `inputActions` face; the
+ * span must be captured at pick time (`captureInsertion()` returns a
+ * revision-guarded copy of the live editor selection), not read from a
+ * React prop, which always trails the editor revision.
+ */
+function insertViaInputActions(inputActions, text) {
+  if (!inputActions
+    || typeof inputActions.captureInsertion !== 'function'
+    || typeof inputActions.insertText !== 'function') return false
+  try {
+    const span = inputActions.captureInsertion()
+    if (!span || typeof span.draftRev !== 'number') return false
+    return inputActions.insertText(text, span) === true
+  } catch { return false }
 }
 
 /** Best-effort refocus of the composer textarea after the picker closes. */
@@ -851,7 +879,7 @@ const STYLE = `<style>
 .sk-chip{display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 9px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-secondary);font-family:var(--dsw-font-family);font-size:12px;cursor:pointer;white-space:nowrap}
 .sk-chip:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
 .sk-picker-backdrop{position:fixed;inset:0;z-index:2147483200}
-.sk-picker{position:fixed;z-index:2147483201;width:400px;max-width:92vw;max-height:360px;display:flex;flex-direction:column;gap:4px;padding:6px;background:var(--dsw-specific-menu);border:1px solid var(--dsw-alias-border-inverted);border-radius:12px;box-shadow:var(--dsw-shadow-lv3)}
+.sk-picker{position:fixed;z-index:2147483201;width:400px;max-width:92vw;max-height:360px;display:flex;flex-direction:column;gap:4px;padding:6px;background:var(--dsw-specific-menu);backdrop-filter:var(--dsw-menu-backdrop-filter,blur(20px) saturate(150%));-webkit-backdrop-filter:var(--dsw-menu-backdrop-filter,blur(20px) saturate(150%));border:1px solid var(--dsw-alias-border-inverted);border-radius:12px;box-shadow:var(--dsw-shadow-lv3)}
 .sk-picker-input{flex:none;box-sizing:border-box;width:100%}
 .sk-picker-list{display:flex;flex-direction:column;min-height:40px;overflow-y:auto}
 .sk-picker-row{display:flex;align-items:center;gap:8px;width:100%;min-height:36px;padding:6px 10px;border:0;border-radius:8px;background:transparent;color:var(--dsw-alias-label-primary);text-align:left;cursor:pointer;font-family:var(--dsw-font-family);font-size:13px}
@@ -2145,7 +2173,7 @@ const CLIENT_NAME = '@weibaohui/skills-management'
 module.exports = {
   name: CLIENT_NAME,
   inject: ['slots', 'locale'],
-  __internals: { NS, ZH, EN, matchSkill, formatSize, formatTime, usageText, markdownLabels, sortSkills, gradient, shortName, isInstalledRow, patchMarketInstalled, openTriggerSource, insertComposerText, fetchSkillCandidates },
+  __internals: { NS, ZH, EN, matchSkill, formatSize, formatTime, usageText, markdownLabels, sortSkills, gradient, shortName, isInstalledRow, patchMarketInstalled, openTriggerSource, insertComposerText, insertViaInputActions, fetchSkillCandidates },
   /** Test/host helper: mount a standalone page into any container. */
   __boot(container, opts = {}) {
     ensureStyles()
@@ -2254,6 +2282,7 @@ module.exports = {
         return h(ComposerButtonSlot, {
           __t: t, label: t('pickSkill'), title: t('pickSkillTitle'),
           source: 'skill', sessionId: apiProps && apiProps.sessionId, input: apiProps && apiProps.input,
+          inputActions: apiProps && apiProps.inputActions,
         })
       }))
       } catch (e) { (globalThis.__skErrors = globalThis.__skErrors || []).push('input.left:' + (e && e.message)); throw e }
@@ -2289,7 +2318,15 @@ function ComposerButtonSlot(props) {
       .catch(() => setRows([]))
   }
   const pick = (row) => {
-    insertComposerText(composerScope, props.sessionId, liveInput.current, `/${row.name} `)
+    const text = `/${row.name} `
+    // dsh 0.2.x: capture the span at pick time via the slot's inputActions;
+    // ≤0.1.x hosts (no inputActions, live `input` prop) fall back to the
+    // scoped-event splice with the prop snapshot.
+    const ok = insertViaInputActions(props.inputActions, text)
+      || insertComposerText(composerScope, props.sessionId, liveInput.current, text)
+    if (!ok) {
+      try { console.warn('[skills-management] draft insert failed for', row.name) } catch {}
+    }
     close()
     refocusComposer()
   }
