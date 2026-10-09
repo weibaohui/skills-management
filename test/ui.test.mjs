@@ -420,3 +420,19 @@ test('executor data refresh: summary merges, mutations stale affected rows, dial
   assert.ok((src.match(/onRefreshCandidates: reloadExecutors/g) || []).length >= 2,
     'install picker and linker dialog both refetch on open')
 })
+
+test('composer chip is borderless and mounts the wrench icon (issue #15)', () => {
+  // 回归：带边框的 chip 夹在宿主无边框工具行控件中间，视觉权重突兀。
+  // 锁定：chip 无边框、扳手图标挂在文字前、zh/en 文案不再带「＋」前缀。
+  const src = readFileSync(new URL('../client/index.js', import.meta.url), 'utf8')
+  const chip = src.match(/\.sk-chip\{([^}]*)\}/)
+  assert.ok(chip, '.sk-chip rule exists')
+  assert.ok(/border:none/.test(chip[1]) && !/border:1px/.test(chip[1]),
+    'chip is borderless — matches host tool-row controls')
+  assert.ok(/\.sk-chip svg\{[^}]*width:13px/.test(src), 'icon sizing rule exists')
+  assert.ok(/function IconWrench\(\)/.test(src), 'wrench icon component exists')
+  assert.ok(/onClick: open,\s*\}, h\(IconWrench\), props\.label, popover\)/.test(src),
+    'button mounts the wrench icon before the label')
+  assert.ok(/pickSkill: '技能'/.test(src) && /pickSkill: 'Skill'/.test(src),
+    'zh/en labels carry no ＋ prefix (the icon replaces it)')
+})

@@ -344,7 +344,7 @@ window.__ModuleLoader__.load({
     let sessionsApi = null
     const sessionsSvc = () => sessionsApi
 
-    // Composer services (inputTriggers + sessions) for the ＋ 技能 button plus
+    // Composer services (inputTriggers + sessions) for the 技能 button plus
     // the skills catalog face for the picker: the button opens
     // the plugin's own searchable picker popover (the host slash menu filters
     // only by a typed query, which a button click cannot provide); the pick is
@@ -365,7 +365,7 @@ window.__ModuleLoader__.load({
      * the draft end (host toggleCommandMenu 同款调用形状；标准 kit 不暴露光标，
      * pick 依赖 span-CAS：点击后草稿若再变动则本次 pick 静默作废）。
      *
-     * NOTE: the ＋ 技能 button no longer uses this — the host menu cannot offer
+     * NOTE: the 技能 button no longer uses this — the host menu cannot offer
      * a search box, so the button opens SkillPicker instead. Kept for the
      * contract tests and as the documented toggleSource path.
      */
@@ -509,7 +509,7 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * ＋ 技能 picker：锚定在按钮上方、自带搜索框的候选浮层（portal 到 body）。
+     * 技能 picker：锚定在按钮上方、自带搜索框的候选浮层（portal 到 body）。
      * 宿主斜杠菜单靠「输入的 query」过滤，按钮打开的菜单没有输入载体——候选
      * 太多时无从筛选，所以浮层自带搜索框。键盘 ↑/↓/Enter/Esc，鼠标 hover+点击。
      */
@@ -739,7 +739,7 @@ window.__ModuleLoader__.load({
       invocationHint: '关闭后技能保留在库里，但不再注入对话目录（skill 工具也调不到）',
       pathLabel: '路径',
       meTag: '本机',
-      pickSkill: '＋ 技能',
+      pickSkill: '技能',
       pickSkillTitle: '选择一个技能，其内容将注入本条消息',
       pickerSearch: '搜索技能名称或描述…',
       pickerLoading: '正在加载技能目录…',
@@ -923,7 +923,7 @@ window.__ModuleLoader__.load({
       invocationHint: 'When off, the skill stays in the library but is not injected into conversation catalogs',
       pathLabel: 'Path',
       meTag: 'me',
-      pickSkill: '+ Skill',
+      pickSkill: 'Skill',
       pickSkillTitle: 'Pick a skill; its content is injected into this message',
       pickerSearch: 'Search skills by name or description…',
       pickerLoading: 'Loading skill catalog…',
@@ -1155,8 +1155,9 @@ window.__ModuleLoader__.load({
     .sk-menu-item:hover{background:var(--dsw-alias-interactive-bg-hover)}
     .sk-menu-item.on{color:var(--dsw-alias-state-business-primary);font-weight:500}
     .sk-tabpill{background:transparent;border:none;color:var(--dsw-alias-label-secondary);font-family:var(--dsw-font-family)}
-    .sk-chip{display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 9px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-secondary);font-family:var(--dsw-font-family);font-size:12px;cursor:pointer;white-space:nowrap}
+    .sk-chip{display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 7px;border-radius:8px;border:none;background:transparent;color:var(--dsw-alias-label-secondary);font-family:var(--dsw-font-family);font-size:12px;cursor:pointer;white-space:nowrap}
     .sk-chip:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
+    .sk-chip svg{width:13px;height:13px;flex:none;display:block}
     .sk-picker-backdrop{position:fixed;inset:0;z-index:2147483200}
     .sk-picker{position:fixed;z-index:2147483201;width:400px;max-width:92vw;max-height:360px;display:flex;flex-direction:column;gap:4px;padding:6px;background:var(--dsw-specific-menu);backdrop-filter:var(--dsw-menu-backdrop-filter,blur(20px) saturate(150%));-webkit-backdrop-filter:var(--dsw-menu-backdrop-filter,blur(20px) saturate(150%));border:1px solid var(--dsw-alias-border-inverted);border-radius:12px;box-shadow:var(--dsw-shadow-lv3)}
     .sk-picker-input{flex:none;box-sizing:border-box;width:100%}
@@ -2488,7 +2489,7 @@ window.__ModuleLoader__.load({
             })
           }
         } catch {}
-        // Composer services (inputTriggers + sessions) for the ＋ 技能 button;
+        // Composer services (inputTriggers + sessions) for the 技能 button;
         // absence hides the button only.
         try {
           if (typeof ctx.inject === 'function') {
@@ -2569,7 +2570,18 @@ window.__ModuleLoader__.load({
       },
     }
 
-    /** Composer tool-row button: 加号+文字 chip，点击在按钮上方打开自带搜索的
+    /** Lucide `wrench`（ISC）内联 SVG：fill none / stroke currentColor，明暗主题
+     *  自动跟随；尺寸交给 .sk-chip svg（13px），与工具行其它线性图标同款描边。 */
+    function IconWrench() {
+      return h('svg', {
+        viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
+        'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+        'aria-hidden': 'true',
+      }, h('path', { d: 'M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z' }))
+    }
+
+    /** Composer tool-row button: 扳手图标+文字 chip（无边框静默样式，与宿主工具行
+     *  控件一致），点击在按钮上方打开自带搜索的
      *  技能 picker 浮层（候选 = 宿主技能注册表，ui-skill 同源）；pick 经
      *  slash/input-insert-text 写入 `/<name> `。浮层背板盖住按钮以外的区域，
      *  再点一次按钮会先落在背板上——天然形成开关切换。
@@ -2619,7 +2631,7 @@ window.__ModuleLoader__.load({
         'aria-haspopup': 'dialog',
         'aria-expanded': picker !== null,
         onClick: open,
-      }, props.label, popover)
+      }, h(IconWrench), props.label, popover)
     }
 
     return module.exports
