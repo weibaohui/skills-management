@@ -690,7 +690,14 @@ const SHARE_PROMPT_ZH = [
   '- 全程与最终汇报都使用中文。',
 ].join('\n')
 
-const API = '/skills-management/api'
+// API 基址随页面走：子路径反代（如 https://host/app/dsh/）下，绝对路径 /skills-management/api
+// 会打到站点根而 404。与宿主官方客户端一致，用 document.baseURI 推导（dsh-sync#14 同款）。
+const API = (() => {
+  try {
+    const base = (typeof document !== 'undefined' && document.baseURI) || (typeof location !== 'undefined' ? location.href : '/')
+    return new URL('skills-management/api', new URL('.', base)).pathname.replace(/\/+$/, '')
+  } catch { return '/skills-management/api' }
+})()
 
 function formatSize(bytes) {
   if (!Number.isFinite(bytes) || bytes < 0) return '-'
